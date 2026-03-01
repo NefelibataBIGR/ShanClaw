@@ -264,35 +264,46 @@ func CheckNetworkEgress(rawURL string, config *PermissionsConfig) (string, strin
 func CheckToolCall(toolName, argsJSON string, config *PermissionsConfig) (string, string) {
 	switch toolName {
 	case "bash":
-		cmd := extractField(argsJSON, "command")
+		cmd := ExtractField(argsJSON, "command")
 		return CheckCommand(cmd, config)
 	case "file_read":
-		path := extractField(argsJSON, "path")
+		path := ExtractField(argsJSON, "path")
 		return CheckFilePath(path, "read", config)
 	case "file_write", "file_edit":
-		path := extractField(argsJSON, "path")
+		path := ExtractField(argsJSON, "path")
 		return CheckFilePath(path, "write", config)
 	case "glob", "grep":
-		path := extractField(argsJSON, "path")
+		path := ExtractField(argsJSON, "path")
 		if path == "" {
-			path = extractField(argsJSON, "pattern")
+			path = ExtractField(argsJSON, "pattern")
 		}
 		return CheckFilePath(path, "read", config)
 	case "directory_list":
-		path := extractField(argsJSON, "path")
+		path := ExtractField(argsJSON, "path")
 		if path == "" {
 			path = "."
 		}
 		return CheckFilePath(path, "read", config)
 	case "http":
-		url := extractField(argsJSON, "url")
+		url := ExtractField(argsJSON, "url")
 		return CheckNetworkEgress(url, config)
 	}
 	return "", ""
 }
 
-// extractField extracts a string field from a JSON args string.
-func extractField(argsJSON string, field string) string {
+// IsHardBlocked checks if a command matches any hard-block pattern.
+func IsHardBlocked(cmd string) bool {
+	trimmed := strings.TrimSpace(cmd)
+	for _, pattern := range hardBlockPatterns {
+		if MatchesPattern(trimmed, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractField extracts a string field from a JSON args string.
+func ExtractField(argsJSON string, field string) string {
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
 		return ""

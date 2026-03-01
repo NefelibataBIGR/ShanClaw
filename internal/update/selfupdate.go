@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/creativeprojects/go-selfupdate"
 )
 
@@ -12,6 +13,11 @@ const repoOwner = "Kocoro-lab"
 const repoName = "shan"
 
 func CheckForUpdate(currentVersion string) (*selfupdate.Release, bool, error) {
+	// Skip update check for non-semver versions (e.g. "dev")
+	if _, err := semver.NewVersion(currentVersion); err != nil {
+		return nil, false, nil
+	}
+
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{})
 	if err != nil {
 		return nil, false, err
@@ -41,6 +47,11 @@ func CheckForUpdate(currentVersion string) (*selfupdate.Release, bool, error) {
 }
 
 func DoUpdate(currentVersion string) (string, error) {
+	// Reject non-semver versions (e.g. "dev")
+	if _, err := semver.NewVersion(currentVersion); err != nil {
+		return currentVersion, fmt.Errorf("cannot update from non-semver version: %s", currentVersion)
+	}
+
 	source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{})
 	if err != nil {
 		return "", err

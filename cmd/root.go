@@ -25,6 +25,7 @@ import (
 var Version = "dev"
 var autoApprove = false
 var runSetup = false
+var dangerouslySkipPermissions = false
 
 var rootCmd = &cobra.Command{
 	Use:   "shan [query]",
@@ -62,6 +63,7 @@ var rootCmd = &cobra.Command{
 
 		// Interactive mode
 		m := tui.New(cfg, Version)
+		m.SetBypassPermissions(dangerouslySkipPermissions)
 		p := tea.NewProgram(m)
 		m.SetProgram(p)
 		_, err = p.Run()
@@ -82,6 +84,12 @@ func init() {
 		"setup",
 		false,
 		"Run interactive setup to configure endpoint and API key",
+	)
+	rootCmd.Flags().BoolVar(
+		&dangerouslySkipPermissions,
+		"dangerously-skip-permissions",
+		false,
+		"Skip all permission checks (hard-blocks still enforced). Use at your own risk.",
 	)
 }
 
@@ -112,6 +120,7 @@ func runOneShot(cfg *config.Config, query string) error {
 	hookRunner := hooks.NewHookRunner(cfg.Hooks)
 	loop := agent.NewAgentLoop(gw, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
 	loop.SetHandler(&cliEventHandler{autoApprove: autoApprove})
+	loop.SetBypassPermissions(dangerouslySkipPermissions)
 	if mcpCtx := mcppkg.BuildContext(cfg.MCPServers); mcpCtx != "" {
 		loop.SetMCPContext(mcpCtx)
 	}

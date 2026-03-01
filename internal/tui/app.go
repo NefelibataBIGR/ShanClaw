@@ -97,8 +97,9 @@ type Model struct {
 	shannonDir    string
 	auditor       *audit.AuditLogger
 	hookRunner    *hooks.HookRunner
-	serverToolErr  error // non-nil if server tools failed to load
-	customCommands map[string]string // name → prompt content from commands/*.md
+	serverToolErr        error // non-nil if server tools failed to load
+	customCommands       map[string]string // name → prompt content from commands/*.md
+	bypassPermissions    bool
 	// Slash command completion menu
 	menuVisible   bool
 	menuIndex     int
@@ -114,6 +115,13 @@ type slashCmd struct {
 // inject messages (e.g. approval prompts) into the TUI event loop.
 func (m *Model) SetProgram(p *tea.Program) {
 	m.program = p
+}
+
+func (m *Model) SetBypassPermissions(bypass bool) {
+	m.bypassPermissions = bypass
+	if m.agentLoop != nil {
+		m.agentLoop.SetBypassPermissions(bypass)
+	}
 }
 
 func New(cfg *config.Config, version string) *Model {
@@ -411,6 +419,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.registry != nil {
 			m.toolRegistry = msg.registry
 			m.agentLoop = agent.NewAgentLoop(m.gateway, msg.registry, m.cfg.ModelTier, m.shannonDir, m.cfg.Agent.MaxIterations, m.cfg.Tools.ResultTruncation, m.cfg.Tools.ArgsTruncation, &m.cfg.Permissions, m.auditor, m.hookRunner)
+			m.agentLoop.SetBypassPermissions(m.bypassPermissions)
 			m.serverToolErr = nil
 		}
 		return m, nil

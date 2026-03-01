@@ -51,18 +51,19 @@ type EventHandler interface {
 }
 
 type AgentLoop struct {
-	client      *client.GatewayClient
-	tools       *ToolRegistry
-	modelTier   string
-	handler     EventHandler
-	shannonDir  string
-	maxIter     int
-	resultTrunc int
-	argsTrunc   int
-	permissions *permissions.PermissionsConfig
-	auditor     *audit.AuditLogger
-	hookRunner  *hooks.HookRunner
-	mcpContext  string
+	client             *client.GatewayClient
+	tools              *ToolRegistry
+	modelTier          string
+	handler            EventHandler
+	shannonDir         string
+	maxIter            int
+	resultTrunc        int
+	argsTrunc          int
+	permissions        *permissions.PermissionsConfig
+	auditor            *audit.AuditLogger
+	hookRunner         *hooks.HookRunner
+	mcpContext         string
+	bypassPermissions  bool
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -99,6 +100,10 @@ func (a *AgentLoop) SetModelTier(tier string) {
 
 func (a *AgentLoop) SetMCPContext(ctx string) {
 	a.mcpContext = ctx
+}
+
+func (a *AgentLoop) SetBypassPermissions(bypass bool) {
+	a.bypassPermissions = bypass
 }
 
 func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []client.Message) (string, *TurnUsage, error) {
@@ -292,6 +297,11 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 // Returns (decision, wasApproved). decision is "allow", "deny", or "ask".
 // wasApproved is true if the tool call should proceed.
 func (a *AgentLoop) checkPermissionAndApproval(toolName, argsStr string, tool Tool, outputText string) (string, bool) {
+	// Bypass mode: skip all permission checks including hard-blocks
+	if a.bypassPermissions {
+		return "allow", true
+	}
+
 	// Run permission engine checks based on tool type
 	if a.permissions != nil {
 		decision, _ := permissions.CheckToolCall(toolName, argsStr, a.permissions)
