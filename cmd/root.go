@@ -157,6 +157,10 @@ func (h *cliEventHandler) OnToolResult(name string, args string, result agent.To
 
 func (h *cliEventHandler) OnText(text string) {}
 
+func (h *cliEventHandler) OnStreamDelta(delta string) {
+	fmt.Print(delta)
+}
+
 func (h *cliEventHandler) OnUsage(usage agent.TurnUsage) {}
 
 func (h *cliEventHandler) OnApprovalNeeded(tool string, args string) bool {

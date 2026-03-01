@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
 )
@@ -35,7 +36,12 @@ func (t *AppleScriptTool) Run(ctx context.Context, argsJSON string) (agent.ToolR
 		return agent.ToolResult{Content: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
 
-	cmd := exec.CommandContext(ctx, "osascript", "-e", args.Script)
+	// Split multi-line scripts into separate -e arguments for osascript
+	cmdArgs := []string{}
+	for _, line := range splitScriptLines(args.Script) {
+		cmdArgs = append(cmdArgs, "-e", line)
+	}
+	cmd := exec.CommandContext(ctx, "osascript", cmdArgs...)
 	output, err := cmd.CombinedOutput()
 
 	result := string(output)
@@ -58,3 +64,20 @@ func (t *AppleScriptTool) Run(ctx context.Context, argsJSON string) (agent.ToolR
 }
 
 func (t *AppleScriptTool) RequiresApproval() bool { return true }
+
+// splitScriptLines splits an AppleScript into individual lines for -e args.
+// Preserves empty lines as they can be significant in AppleScript blocks.
+func splitScriptLines(script string) []string {
+	lines := strings.Split(script, "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, line)
+		}
+	}
+	if len(result) == 0 {
+		return []string{script}
+	}
+	return result
+}

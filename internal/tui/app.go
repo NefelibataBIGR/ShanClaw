@@ -210,6 +210,7 @@ func New(cfg *config.Config, version string) *Model {
 
 	hookRunner := hooks.NewHookRunner(cfg.Hooks)
 	loop := agent.NewAgentLoop(gateway, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
+	loop.SetEnableStreaming(true) // TUI supports streaming via streamDeltaMsg
 	if mcpCtx := mcp.BuildContext(cfg.MCPServers); mcpCtx != "" {
 		loop.SetMCPContext(mcpCtx)
 	}
@@ -461,6 +462,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolRegistry = msg.registry
 			m.agentLoop = agent.NewAgentLoop(m.gateway, msg.registry, m.cfg.ModelTier, m.shannonDir, m.cfg.Agent.MaxIterations, m.cfg.Tools.ResultTruncation, m.cfg.Tools.ArgsTruncation, &m.cfg.Permissions, m.auditor, m.hookRunner)
 			m.agentLoop.SetBypassPermissions(m.bypassPermissions)
+			m.agentLoop.SetEnableStreaming(true)
 			m.serverToolErr = nil
 		}
 		return m, nil
@@ -1083,7 +1085,13 @@ func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.To
 }
 
 func (h *tuiEventHandler) OnText(text string) {
-	h.model.sendOutput(renderMarkdown(text))
+	h.model.sendOutput(truncateLongResponse(renderMarkdown(text)))
+}
+
+func (h *tuiEventHandler) OnStreamDelta(delta string) {
+	if h.model.program != nil {
+		h.model.program.Send(streamDeltaMsg{delta: delta})
+	}
 }
 
 func (h *tuiEventHandler) OnUsage(usage agent.TurnUsage) {}

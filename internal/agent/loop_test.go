@@ -101,6 +101,7 @@ type mockHandler struct {
 func (h *mockHandler) OnToolCall(name string, args string)        {}
 func (h *mockHandler) OnToolResult(name string, args string, result ToolResult, elapsed time.Duration) {}
 func (h *mockHandler) OnText(text string)                          { h.lastText = text }
+func (h *mockHandler) OnStreamDelta(delta string)                  {}
 func (h *mockHandler) OnUsage(usage TurnUsage)                     {}
 func (h *mockHandler) OnApprovalNeeded(tool string, args string) bool {
 	h.approvalRequested = true

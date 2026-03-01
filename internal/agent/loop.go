@@ -19,7 +19,8 @@ import (
 const baseSystemPrompt = `You are Shannon, an AI assistant running in a CLI terminal on the user's local macOS computer.
 You MUST use tools to perform actions — never pretend you performed an action without calling a tool.
 If the user asks you to DO something (open an app, send a notification, take a screenshot, etc.), you MUST call the appropriate tool. Never say "I've done it" without a tool call.
-Be concise in your responses.
+NEVER output fake tool calls as text (e.g. <function_calls> XML). Only use the actual tool calling mechanism. If a tool fails, explain the error and try a different approach.
+Be concise in your responses. Summarize tool results — never quote raw file contents or tool output verbatim.
 
 Tool selection rules:
 - For opening apps, window management, UI automation: use applescript (e.g. tell application "Safari" to activate)
@@ -27,11 +28,10 @@ Tool selection rules:
 - For clipboard read/write: use clipboard
 - For mouse/keyboard control: use computer
 - For screen capture: use screenshot
-- For browser automation (isolated Chrome): use browser
+- For browser automation (isolated headless Chrome): use browser — WARNING: this launches a fresh Chrome with no cookies/sessions, public sites like Google will block it with CAPTCHA. Only use for your own sites or simple page fetches.
+- For browsing real websites, searching, or interacting with logged-in sites: use web_search/web_fetch (server-side), or applescript+screenshot+computer (OS-level, uses the user's real Chrome)
 - For file operations: use file_read, file_write, file_edit, glob, grep, directory_list
 - For shell commands, tests, builds: use bash
-- For web search and research: use web_search, web_fetch (server-side)
-- For server-side browser (remote pages): use browser_navigate, browser_click, etc.
 When reading files, always use file_read before editing.`
 
 type TurnUsage struct {
@@ -46,6 +46,7 @@ type EventHandler interface {
 	OnToolCall(name string, args string)
 	OnToolResult(name string, args string, result ToolResult, elapsed time.Duration)
 	OnText(text string)
+	OnStreamDelta(delta string)
 	OnApprovalNeeded(tool string, args string) bool
 	OnUsage(usage TurnUsage)
 }
@@ -64,6 +65,7 @@ type AgentLoop struct {
 	hookRunner         *hooks.HookRunner
 	mcpContext         string
 	bypassPermissions  bool
+	enableStreaming     bool
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -106,6 +108,10 @@ func (a *AgentLoop) SetBypassPermissions(bypass bool) {
 	a.bypassPermissions = bypass
 }
 
+func (a *AgentLoop) SetEnableStreaming(enable bool) {
+	a.enableStreaming = enable
+}
+
 func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []client.Message) (string, *TurnUsage, error) {
 	// Build system prompt using prompt builder with instructions/memory
 	var toolNames []string
@@ -145,11 +151,24 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	const maxSameToolCalls = 4 // max consecutive calls to same tool with varying args
 
 	for i := 0; i < a.maxIter; i++ {
-		resp, err := a.client.Complete(ctx, client.CompletionRequest{
-			Messages:  messages,
-			ModelTier: a.modelTier,
-			Tools:     toolSchemas,
-		})
+		// Call LLM — streaming or blocking
+		var resp *client.CompletionResponse
+		var err error
+		if a.enableStreaming && a.handler != nil {
+			resp, err = a.client.CompleteStream(ctx, client.CompletionRequest{
+				Messages:  messages,
+				ModelTier: a.modelTier,
+				Tools:     toolSchemas,
+			}, func(delta client.StreamDelta) {
+				a.handler.OnStreamDelta(delta.Text)
+			})
+		} else {
+			resp, err = a.client.Complete(ctx, client.CompletionRequest{
+				Messages:  messages,
+				ModelTier: a.modelTier,
+				Tools:     toolSchemas,
+			})
+		}
 		if err != nil {
 			return "", usage, fmt.Errorf("LLM call failed: %w", err)
 		}
@@ -160,132 +179,135 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		usage.CostUSD += resp.Usage.CostUSD
 		usage.LLMCalls++
 
-		// If no tool call, return text response
-		if resp.FunctionCall == nil {
+		// If no tool calls, return text response
+		if !resp.HasToolCalls() {
 			if a.handler != nil {
 				a.handler.OnText(resp.OutputText)
 			}
 			return resp.OutputText, usage, nil
 		}
 
-		// Execute tool call
-		fc := resp.FunctionCall
-		argsStr := fc.ArgumentsString()
+		// Execute all tool calls
+		toolCalls := resp.AllToolCalls()
+		var allResults strings.Builder
+		if resp.OutputText != "" {
+			allResults.WriteString(resp.OutputText)
+			allResults.WriteString("\n\n")
+		}
 
-		// Loop detection: exact duplicate (same name+args) 3x, or same tool name 4x
-		callSig := fc.Name + ":" + argsStr
-		if callSig == lastToolCall {
-			dupCount++
-		} else {
-			lastToolCall = callSig
-			dupCount = 1
-		}
-		if fc.Name == lastToolName {
-			sameToolCount++
-		} else {
-			lastToolName = fc.Name
-			sameToolCount = 1
-		}
-		if dupCount >= 3 || sameToolCount >= maxSameToolCalls {
-			// Force the LLM to stop by sending without tools
-			messages = append(messages, client.Message{
-				Role:    "user",
-				Content: "You've called the same tool repeatedly. Please use the results already available and provide your answer now.",
-			})
-			finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
-				Messages:  messages,
-				ModelTier: a.modelTier,
-				// No tools — force text response
-			})
-			if err != nil {
-				return "", usage, fmt.Errorf("LLM call failed: %w", err)
+		for _, fc := range toolCalls {
+			argsStr := fc.ArgumentsString()
+
+			// Loop detection
+			callSig := fc.Name + ":" + argsStr
+			if callSig == lastToolCall {
+				dupCount++
+			} else {
+				lastToolCall = callSig
+				dupCount = 1
 			}
-			usage.InputTokens += finalResp.Usage.InputTokens
-			usage.OutputTokens += finalResp.Usage.OutputTokens
-			usage.TotalTokens += finalResp.Usage.TotalTokens
-			usage.CostUSD += finalResp.Usage.CostUSD
-			usage.LLMCalls++
-			if a.handler != nil {
-				a.handler.OnText(finalResp.OutputText)
+			if fc.Name == lastToolName {
+				sameToolCount++
+			} else {
+				lastToolName = fc.Name
+				sameToolCount = 1
 			}
-			return finalResp.OutputText, usage, nil
-		}
-
-		if a.handler != nil {
-			a.handler.OnToolCall(fc.Name, argsStr)
-		}
-
-		tool, ok := a.tools.Get(fc.Name)
-		if !ok {
-			messages = append(messages, client.Message{
-				Role:    "assistant",
-				Content: formatToolResult(fc.Name, argsStr, resp.OutputText, fmt.Sprintf("unknown tool: %s", fc.Name), true, a.argsTrunc, a.resultTrunc),
-			})
-			continue
-		}
-
-		// Permission check via permissions engine (additional layer on top of RequiresApproval/SafeChecker)
-		decision, wasApproved := a.checkPermissionAndApproval(fc.Name, argsStr, tool, resp.OutputText)
-		if decision == "deny" {
-			a.logAudit(fc.Name, argsStr, "tool call denied by permission policy", decision, false, 0)
-			messages = append(messages, client.Message{
-				Role:    "assistant",
-				Content: formatToolResult(fc.Name, argsStr, resp.OutputText, "tool call denied by permission policy", true, a.argsTrunc, a.resultTrunc),
-			})
-			continue
-		}
-		if decision == "ask" && !wasApproved {
-			a.logAudit(fc.Name, argsStr, "tool call denied by user", decision, false, 0)
-			messages = append(messages, client.Message{
-				Role:    "assistant",
-				Content: formatToolResult(fc.Name, argsStr, resp.OutputText, "tool call denied by user", true, a.argsTrunc, a.resultTrunc),
-			})
-			continue
-		}
-
-		// Pre-tool-use hook check (after permission, before execution)
-		if a.hookRunner != nil {
-			hookDecision, hookReason, hookErr := a.hookRunner.RunPreToolUse(ctx, fc.Name, argsStr, "")
-			if hookErr != nil {
-				// Log but don't block on hook errors
-				fmt.Fprintf(os.Stderr, "[hooks] pre-tool-use error: %v\n", hookErr)
-			}
-			if hookDecision == "deny" {
-				a.logAudit(fc.Name, argsStr, "tool call denied by hook: "+hookReason, "deny", false, 0)
+			if dupCount >= 3 || sameToolCount >= maxSameToolCalls {
 				messages = append(messages, client.Message{
-					Role:    "assistant",
-					Content: formatToolResult(fc.Name, argsStr, resp.OutputText, "tool call denied by hook: "+hookReason, true, a.argsTrunc, a.resultTrunc),
+					Role:    "user",
+					Content: "You've called the same tool repeatedly. Please use the results already available and provide your answer now.",
 				})
+				finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
+					Messages:  messages,
+					ModelTier: a.modelTier,
+				})
+				if err != nil {
+					return "", usage, fmt.Errorf("LLM call failed: %w", err)
+				}
+				usage.InputTokens += finalResp.Usage.InputTokens
+				usage.OutputTokens += finalResp.Usage.OutputTokens
+				usage.TotalTokens += finalResp.Usage.TotalTokens
+				usage.CostUSD += finalResp.Usage.CostUSD
+				usage.LLMCalls++
+				if a.handler != nil {
+					a.handler.OnText(finalResp.OutputText)
+				}
+				return finalResp.OutputText, usage, nil
+			}
+
+			if a.handler != nil {
+				a.handler.OnToolCall(fc.Name, argsStr)
+			}
+
+			tool, ok := a.tools.Get(fc.Name)
+			if !ok {
+				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: unknown tool: %s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), fc.Name))
 				continue
 			}
+
+			// Permission check
+			decision, wasApproved := a.checkPermissionAndApproval(fc.Name, argsStr, tool, resp.OutputText)
+			if decision == "deny" {
+				a.logAudit(fc.Name, argsStr, "tool call denied by permission policy", decision, false, 0)
+				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: tool call denied by permission policy\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc)))
+				if a.handler != nil {
+					a.handler.OnToolResult(fc.Name, argsStr, ToolResult{Content: "denied by policy", IsError: true}, 0)
+				}
+				continue
+			}
+			if decision == "ask" && !wasApproved {
+				a.logAudit(fc.Name, argsStr, "tool call denied by user", decision, false, 0)
+				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: tool call denied by user\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc)))
+				if a.handler != nil {
+					a.handler.OnToolResult(fc.Name, argsStr, ToolResult{Content: "denied by user", IsError: true}, 0)
+				}
+				continue
+			}
+
+			// Pre-tool-use hook
+			if a.hookRunner != nil {
+				hookDecision, hookReason, hookErr := a.hookRunner.RunPreToolUse(ctx, fc.Name, argsStr, "")
+				if hookErr != nil {
+					fmt.Fprintf(os.Stderr, "[hooks] pre-tool-use error: %v\n", hookErr)
+				}
+				if hookDecision == "deny" {
+					a.logAudit(fc.Name, argsStr, "tool call denied by hook: "+hookReason, "deny", false, 0)
+					allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: tool call denied by hook: %s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), hookReason))
+					continue
+				}
+			}
+
+			startTime := time.Now()
+			result, runErr := tool.Run(ctx, argsStr)
+			elapsed := time.Since(startTime)
+			if runErr != nil {
+				result = ToolResult{Content: fmt.Sprintf("tool error: %v", runErr), IsError: true}
+			}
+
+			result.Content = sanitizeResult(result.Content)
+
+			if a.hookRunner != nil {
+				_ = a.hookRunner.RunPostToolUse(ctx, fc.Name, argsStr, result.Content, "")
+			}
+
+			a.logAudit(fc.Name, argsStr, result.Content, decision, wasApproved, elapsed.Milliseconds())
+
+			if a.handler != nil {
+				a.handler.OnToolResult(fc.Name, argsStr, result, elapsed)
+			}
+
+			cleanResult := stripLineNumbers(result.Content)
+			if result.IsError {
+				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: %s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc)))
+			} else {
+				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nResult:\n%s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc)))
+			}
 		}
 
-		startTime := time.Now()
-		result, err := tool.Run(ctx, argsStr)
-		elapsed := time.Since(startTime)
-		if err != nil {
-			result = ToolResult{Content: fmt.Sprintf("tool error: %v", err), IsError: true}
-		}
-
-		// Strip base64 image blobs before they enter LLM context or terminal
-		result.Content = sanitizeResult(result.Content)
-
-		// Post-tool-use hook (fire-and-forget)
-		if a.hookRunner != nil {
-			_ = a.hookRunner.RunPostToolUse(ctx, fc.Name, argsStr, result.Content, "")
-		}
-
-		a.logAudit(fc.Name, argsStr, result.Content, decision, wasApproved, elapsed.Milliseconds())
-
-		if a.handler != nil {
-			a.handler.OnToolResult(fc.Name, argsStr, result, elapsed)
-		}
-
-		// Fold everything into a single assistant message so the LLM sees
-		// its own tool call AND the result in one turn
+		// Add all tool results as a single assistant message
 		messages = append(messages, client.Message{
 			Role:    "assistant",
-			Content: formatToolResult(fc.Name, argsStr, resp.OutputText, result.Content, result.IsError, a.argsTrunc, a.resultTrunc),
+			Content: allResults.String(),
 		})
 	}
 
@@ -379,6 +401,15 @@ func sanitizeResult(content string) string {
 	return result
 }
 
+// lineNumPrefix matches the "  42 | " prefix added by file_read.
+var lineNumPrefix = regexp.MustCompile(`(?m)^\s*\d+\s*\| `)
+
+// stripLineNumbers removes line-number prefixes from file_read output
+// so the LLM sees clean content (saves tokens, prevents verbatim echo).
+func stripLineNumbers(s string) string {
+	return lineNumPrefix.ReplaceAllString(s, "")
+}
+
 // formatToolResult builds a single assistant message containing the tool call
 // and its result, so the LLM sees both in one turn and doesn't re-call.
 func formatToolResult(name, args, outputText, result string, isError bool, argsTrunc, resultTrunc int) string {
@@ -388,10 +419,14 @@ func formatToolResult(name, args, outputText, result string, isError bool, argsT
 		sb.WriteString("\n\n")
 	}
 	sb.WriteString(fmt.Sprintf("I called %s(%s).\n\n", name, truncateStr(args, argsTrunc)))
+
+	// Strip line numbers from file content — saves tokens, prevents verbatim echo
+	cleanResult := stripLineNumbers(result)
+
 	if isError {
-		sb.WriteString(fmt.Sprintf("Error: %s", truncateStr(result, resultTrunc)))
+		sb.WriteString(fmt.Sprintf("Error: %s", truncateStr(cleanResult, resultTrunc)))
 	} else {
-		sb.WriteString(fmt.Sprintf("Result:\n%s", truncateStr(result, resultTrunc)))
+		sb.WriteString(fmt.Sprintf("Result:\n%s", truncateStr(cleanResult, resultTrunc)))
 	}
 	return sb.String()
 }

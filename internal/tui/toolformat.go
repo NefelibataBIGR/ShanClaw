@@ -113,6 +113,22 @@ func formatExpandedToolResult(toolName string, args string, isError bool, conten
 	return sb.String()
 }
 
+// maxResponseDisplayLines is the max visible lines for LLM text responses.
+const maxResponseDisplayLines = 40
+
+// truncateLongResponse trims rendered text exceeding the line limit.
+func truncateLongResponse(rendered string) string {
+	lines := strings.Split(rendered, "\n")
+	if len(lines) <= maxResponseDisplayLines {
+		return rendered
+	}
+	kept := strings.Join(lines[:maxResponseDisplayLines], "\n")
+	hidden := len(lines) - maxResponseDisplayLines
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	notice := dim.Render(fmt.Sprintf("  ... (%d more lines — /copy for full text)", hidden))
+	return kept + "\n" + notice
+}
+
 func strVal(m map[string]interface{}, key string) string {
 	if v, ok := m[key]; ok {
 		return fmt.Sprintf("%v", v)

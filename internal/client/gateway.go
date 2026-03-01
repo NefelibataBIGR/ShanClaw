@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -39,6 +40,7 @@ type CompletionRequest struct {
 	Temperature   float64   `json:"temperature,omitempty"`
 	MaxTokens     int       `json:"max_tokens,omitempty"`
 	Tools         []Tool    `json:"tools,omitempty"`
+	Stream        bool      `json:"stream,omitempty"`
 }
 
 type FunctionCall struct {
@@ -67,15 +69,33 @@ type Usage struct {
 }
 
 type CompletionResponse struct {
-	Provider     string        `json:"provider"`
-	Model        string        `json:"model"`
-	OutputText   string        `json:"output_text"`
-	FinishReason string        `json:"finish_reason"`
-	FunctionCall *FunctionCall `json:"function_call,omitempty"`
-	Usage        Usage         `json:"usage"`
-	RequestID    string        `json:"request_id,omitempty"`
-	LatencyMs    int           `json:"latency_ms,omitempty"`
-	Cached       bool          `json:"cached"`
+	Provider     string         `json:"provider"`
+	Model        string         `json:"model"`
+	OutputText   string         `json:"output_text"`
+	FinishReason string         `json:"finish_reason"`
+	FunctionCall *FunctionCall  `json:"function_call,omitempty"`
+	ToolCalls    []FunctionCall `json:"tool_calls,omitempty"`
+	Usage        Usage          `json:"usage"`
+	RequestID    string         `json:"request_id,omitempty"`
+	LatencyMs    int            `json:"latency_ms,omitempty"`
+	Cached       bool           `json:"cached"`
+}
+
+// AllToolCalls returns all tool calls from the response, preferring ToolCalls
+// array if present, falling back to single FunctionCall for backward compat.
+func (r *CompletionResponse) AllToolCalls() []FunctionCall {
+	if len(r.ToolCalls) > 0 {
+		return r.ToolCalls
+	}
+	if r.FunctionCall != nil {
+		return []FunctionCall{*r.FunctionCall}
+	}
+	return nil
+}
+
+// HasToolCalls returns true if the response contains any tool calls.
+func (r *CompletionResponse) HasToolCalls() bool {
+	return len(r.ToolCalls) > 0 || r.FunctionCall != nil
 }
 
 
@@ -159,6 +179,103 @@ func (c *GatewayClient) Complete(ctx context.Context, req CompletionRequest) (*C
 	}
 
 	return &result, nil
+}
+
+// StreamDelta represents an incremental text chunk from streaming completion.
+type StreamDelta struct {
+	Text string
+}
+
+// CompleteStream sends a streaming completion request. It calls onDelta for each
+// text chunk and returns the final CompletionResponse when done.
+func (c *GatewayClient) CompleteStream(ctx context.Context, req CompletionRequest, onDelta func(StreamDelta)) (*CompletionResponse, error) {
+	req.Stream = true
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if c.apiKey != "" {
+		httpReq.Header.Set("X-API-Key", c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody := readResponseBody(resp)
+		if errBody != "" {
+			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, errBody)
+		}
+		return nil, fmt.Errorf("API returned %d", resp.StatusCode)
+	}
+
+	// Parse SSE stream
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	var result *CompletionResponse
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := line[6:]
+		if payload == "[DONE]" {
+			break
+		}
+
+		var event map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			continue
+		}
+
+		typeBytes, ok := event["type"]
+		if !ok {
+			continue
+		}
+		var eventType string
+		json.Unmarshal(typeBytes, &eventType)
+
+		switch eventType {
+		case "content_delta":
+			var text string
+			if textBytes, ok := event["text"]; ok {
+				json.Unmarshal(textBytes, &text)
+			}
+			if text != "" && onDelta != nil {
+				onDelta(StreamDelta{Text: text})
+			}
+		case "done":
+			// The done event has the full response shape
+			var final CompletionResponse
+			if err := json.Unmarshal([]byte(payload), &final); err == nil {
+				result = &final
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("stream read error: %w", err)
+	}
+
+	if result == nil {
+		return nil, fmt.Errorf("stream ended without done event")
+	}
+
+	return result, nil
 }
 
 func (c *GatewayClient) SubmitTaskStream(ctx context.Context, req TaskRequest) (*TaskStreamResponse, error) {
