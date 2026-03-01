@@ -146,12 +146,21 @@ func New(cfg *config.Config, version string) *Model {
 
 	ta := textarea.New()
 	ta.Placeholder = "Type a message or /help..."
-	ta.Prompt = "" // We render our own "> " prompt in View()
+	promptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	ta.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return promptStyle.Render("> ")
+		}
+		return "  "
+	})
 	ta.Focus()
 	ta.SetHeight(1)
-	ta.SetWidth(width - 4)
+	ta.SetWidth(width)
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0 // unlimited
+	// Remove cursor line highlight — we use border bars instead
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 
 	gateway := client.NewGatewayClient(cfg.Endpoint, cfg.APIKey)
 	shannonDir := config.ShannonDir()
@@ -350,11 +359,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Ctrl+O: toggle expand last tool result (only expands once per result set)
-		if m.state == stateInput && msg.String() == "ctrl+o" && len(m.lastToolResults) > 0 && !m.toolResultExpanded {
+		// Ctrl+O: expand last tool result (one-shot, resets on new tool result)
+		if msg.String() == "ctrl+o" && len(m.lastToolResults) > 0 && !m.toolResultExpanded {
 			last := m.lastToolResults[len(m.lastToolResults)-1]
-			expanded := formatExpandedToolResult(last.name, last.args, last.isError, last.content, last.elapsed)
-			m.appendOutput(expanded)
+			m.appendOutput(formatExpandedToolResult(last.name, last.args, last.isError, last.content, last.elapsed))
 			m.toolResultExpanded = true
 			return m, m.flushPrints()
 		}
@@ -409,7 +417,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.textarea.SetWidth(msg.Width - 4)
+		m.textarea.SetWidth(msg.Width)
 		return m, nil
 
 	case spinnerTickMsg:
@@ -498,25 +506,17 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	var sb strings.Builder
 
+	barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+	bar := barStyle.Render(strings.Repeat("─", m.width))
+
 	// --- Input / status line ---
 	switch m.state {
 	case stateInput:
-		prompt := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("> ")
-		sb.WriteString(prompt)
-		input := m.textarea.Value()
-		if strings.HasPrefix(input, "/") {
-			cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("111")).Bold(true)
-			spaceIdx := strings.Index(input, " ")
-			if spaceIdx == -1 {
-				sb.WriteString(cmdStyle.Render(input))
-			} else {
-				sb.WriteString(cmdStyle.Render(input[:spaceIdx]))
-				sb.WriteString(input[spaceIdx:])
-			}
-			sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("111")).Render("\u2588"))
-		} else {
-			sb.WriteString(m.textarea.View())
-		}
+		sb.WriteString(bar)
+		sb.WriteString("\n")
+		sb.WriteString(m.textarea.View())
+		sb.WriteString("\n")
+		sb.WriteString(bar)
 	case stateProcessing:
 		if m.streamingText != "" {
 			lines := strings.Split(m.streamingText, "\n")
