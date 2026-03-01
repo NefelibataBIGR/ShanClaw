@@ -154,20 +154,21 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		// Call LLM — streaming or blocking
 		var resp *client.CompletionResponse
 		var err error
+		req := client.CompletionRequest{
+			Messages:  messages,
+			ModelTier: a.modelTier,
+			Tools:     toolSchemas,
+		}
 		if a.enableStreaming && a.handler != nil {
-			resp, err = a.client.CompleteStream(ctx, client.CompletionRequest{
-				Messages:  messages,
-				ModelTier: a.modelTier,
-				Tools:     toolSchemas,
-			}, func(delta client.StreamDelta) {
+			resp, err = a.client.CompleteStream(ctx, req, func(delta client.StreamDelta) {
 				a.handler.OnStreamDelta(delta.Text)
 			})
+			// Fall back to non-streaming if gateway doesn't support it
+			if err != nil {
+				resp, err = a.client.Complete(ctx, req)
+			}
 		} else {
-			resp, err = a.client.Complete(ctx, client.CompletionRequest{
-				Messages:  messages,
-				ModelTier: a.modelTier,
-				Tools:     toolSchemas,
-			})
+			resp, err = a.client.Complete(ctx, req)
 		}
 		if err != nil {
 			return "", usage, fmt.Errorf("LLM call failed: %w", err)
