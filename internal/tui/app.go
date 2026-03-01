@@ -73,6 +73,14 @@ type streamDeltaMsg struct {
 	delta string
 }
 
+type toolResultEntry struct {
+	name    string
+	args    string
+	content string
+	isError bool
+	elapsed time.Duration
+}
+
 type Model struct {
 	cfg           *config.Config
 	gateway       *client.GatewayClient
@@ -100,6 +108,10 @@ type Model struct {
 	serverToolErr        error // non-nil if server tools failed to load
 	customCommands       map[string]string // name → prompt content from commands/*.md
 	bypassPermissions    bool
+	// Tool result display
+	pendingToolName   string
+	pendingToolArgs   string
+	lastToolResults   []toolResultEntry
 	// Slash command completion menu
 	menuVisible   bool
 	menuIndex     int
@@ -1005,16 +1017,37 @@ type tuiEventHandler struct {
 }
 
 func (h *tuiEventHandler) OnToolCall(name string, args string) {
-	h.model.sendOutput(fmt.Sprintf("  Tool: %s(%s)", name, truncate(args, 80)))
+	h.model.pendingToolName = name
+	h.model.pendingToolArgs = args
 }
 
 func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
-	if result.IsError {
-		h.model.sendOutput(fmt.Sprintf("  Error: %s", truncate(result.Content, 200)))
-	} else if result.Content != "" {
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-		h.model.sendOutput(dimStyle.Render(fmt.Sprintf("  Result: %s", truncate(result.Content, 500))))
+	toolName := h.model.pendingToolName
+	toolArgs := h.model.pendingToolArgs
+	if toolName == "" {
+		toolName = name
 	}
+	if toolArgs == "" {
+		toolArgs = args
+	}
+
+	line := formatCompactToolResult(toolName, toolArgs, result.IsError, result.Content, elapsed)
+	h.model.sendOutput(line)
+
+	// Store for Ctrl+O expand
+	h.model.lastToolResults = append(h.model.lastToolResults, toolResultEntry{
+		name:    toolName,
+		args:    toolArgs,
+		content: result.Content,
+		isError: result.IsError,
+		elapsed: elapsed,
+	})
+	if len(h.model.lastToolResults) > 20 {
+		h.model.lastToolResults = h.model.lastToolResults[1:]
+	}
+
+	h.model.pendingToolName = ""
+	h.model.pendingToolArgs = ""
 }
 
 func (h *tuiEventHandler) OnText(text string) {
