@@ -133,11 +133,11 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	})
 
 	messages := make([]client.Message, 0)
-	messages = append(messages, client.Message{Role: "system", Content: systemPrompt})
+	messages = append(messages, client.Message{Role: "system", Content: client.NewTextContent(systemPrompt)})
 	if history != nil {
 		messages = append(messages, history...)
 	}
-	messages = append(messages, client.Message{Role: "user", Content: userMessage})
+	messages = append(messages, client.Message{Role: "user", Content: client.NewTextContent(userMessage)})
 
 	toolSchemas := a.tools.Schemas()
 	usage := &TurnUsage{}
@@ -216,7 +216,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			if dupCount >= 3 || sameToolCount >= maxSameToolCalls {
 				messages = append(messages, client.Message{
 					Role:    "user",
-					Content: "You've called the same tool repeatedly. Please use the results already available and provide your answer now.",
+					Content: client.NewTextContent("You've called the same tool repeatedly. Please use the results already available and provide your answer now."),
 				})
 				finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
 					Messages:  messages,
@@ -308,7 +308,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		// Add all tool results as a single assistant message
 		messages = append(messages, client.Message{
 			Role:    "assistant",
-			Content: allResults.String(),
+			Content: client.NewTextContent(allResults.String()),
 		})
 	}
 

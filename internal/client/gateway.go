@@ -15,11 +15,88 @@ import (
 
 // --- Public types (used by agent loop) ---
 
+// ContentBlock represents a polymorphic content block (text or image).
+type ContentBlock struct {
+	Type   string       `json:"type"`
+	Text   string       `json:"text,omitempty"`
+	Source *ImageSource `json:"source,omitempty"`
+}
+
+// ImageSource holds base64-encoded image data for image content blocks.
+type ImageSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // "image/png"
+	Data      string `json:"data"`
+}
+
+// MessageContent holds message content as either a plain string or content blocks.
+type MessageContent struct {
+	text   string
+	blocks []ContentBlock
+}
+
+// NewTextContent creates a MessageContent from a plain string.
+func NewTextContent(text string) MessageContent {
+	return MessageContent{text: text}
+}
+
+// NewBlockContent creates a MessageContent from content blocks.
+func NewBlockContent(blocks []ContentBlock) MessageContent {
+	return MessageContent{blocks: blocks}
+}
+
+// Text returns the text content. For block content, concatenates all text blocks.
+func (mc MessageContent) Text() string {
+	if mc.text != "" {
+		return mc.text
+	}
+	var sb strings.Builder
+	for _, b := range mc.blocks {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
+		}
+	}
+	return sb.String()
+}
+
+// HasBlocks returns true if the content contains content blocks.
+func (mc MessageContent) HasBlocks() bool {
+	return len(mc.blocks) > 0
+}
+
+// Blocks returns the content blocks.
+func (mc MessageContent) Blocks() []ContentBlock {
+	return mc.blocks
+}
+
+// MarshalJSON serializes as a string if plain text, or as an array if blocks.
+func (mc MessageContent) MarshalJSON() ([]byte, error) {
+	if len(mc.blocks) > 0 {
+		return json.Marshal(mc.blocks)
+	}
+	return json.Marshal(mc.text)
+}
+
+// UnmarshalJSON deserializes from either a JSON string or an array of content blocks.
+func (mc *MessageContent) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		mc.text = s
+		return nil
+	}
+	var blocks []ContentBlock
+	if err := json.Unmarshal(data, &blocks); err == nil {
+		mc.blocks = blocks
+		return nil
+	}
+	return fmt.Errorf("content must be string or array of content blocks")
+}
+
 type Message struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
-	Name       string `json:"name,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	Role       string         `json:"role"`
+	Content    MessageContent `json:"content"`
+	Name       string         `json:"name,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
 type FunctionDef struct {

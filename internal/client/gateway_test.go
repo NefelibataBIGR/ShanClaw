@@ -48,7 +48,7 @@ func TestCompleteUsesCompletionsEndpoint(t *testing.T) {
 	defer cancel()
 
 	resp, err := gw.Complete(ctx, CompletionRequest{
-		Messages: []Message{{Role: "user", Content: "ping"}},
+		Messages: []Message{{Role: "user", Content: NewTextContent("ping")}},
 		Tools:    []Tool{{Type: "function"}},
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestCompleteUsesCompletionsEndpoint(t *testing.T) {
 	if resp.OutputText != "hello" {
 		t.Fatalf("expected output hello, got %s", resp.OutputText)
 	}
-	if len(got.Messages) != 1 || got.Messages[0].Content != "ping" {
+	if len(got.Messages) != 1 || got.Messages[0].Content.Text() != "ping" {
 		t.Errorf("request body messages not preserved")
 	}
 	if len(got.Tools) != 1 || got.Tools[0].Type != "function" {
@@ -198,5 +198,71 @@ func TestExecuteTool_403(t *testing.T) {
 	_, err := gw.ExecuteTool(ctx, "dangerous_tool", map[string]any{}, "")
 	if err == nil {
 		t.Fatal("expected error for 403")
+	}
+}
+
+func TestMessageContent_MarshalString(t *testing.T) {
+	msg := Message{Role: "user", Content: NewTextContent("hello")}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	json.Unmarshal(data, &raw)
+	var content string
+	if err := json.Unmarshal(raw["content"], &content); err != nil {
+		t.Fatalf("content should be a string, got: %s", string(raw["content"]))
+	}
+	if content != "hello" {
+		t.Errorf("expected 'hello', got %q", content)
+	}
+}
+
+func TestMessageContent_MarshalBlocks(t *testing.T) {
+	msg := Message{
+		Role: "user",
+		Content: NewBlockContent([]ContentBlock{
+			{Type: "text", Text: "describe this"},
+			{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/png", Data: "abc123"}},
+		}),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	json.Unmarshal(data, &raw)
+	var blocks []ContentBlock
+	if err := json.Unmarshal(raw["content"], &blocks); err != nil {
+		t.Fatalf("content should be an array, got: %s", string(raw["content"]))
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+}
+
+func TestMessageContent_UnmarshalString(t *testing.T) {
+	raw := `{"role":"user","content":"hello"}`
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if msg.Content.Text() != "hello" {
+		t.Errorf("expected 'hello', got %q", msg.Content.Text())
+	}
+}
+
+func TestMessageContent_UnmarshalBlocks(t *testing.T) {
+	raw := `{"role":"user","content":[{"type":"text","text":"hi"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"xyz"}}]}`
+	var msg Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !msg.Content.HasBlocks() {
+		t.Fatal("expected blocks")
+	}
+	blocks := msg.Content.Blocks()
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
 	}
 }

@@ -16,8 +16,8 @@ func TestStore_SaveLoad(t *testing.T) {
 		Title: "Test session",
 		CWD:   "/tmp/test",
 		Messages: []client.Message{
-			{Role: "user", Content: "hello"},
-			{Role: "assistant", Content: "hi there"},
+			{Role: "user", Content: client.NewTextContent("hello")},
+			{Role: "assistant", Content: client.NewTextContent("hi there")},
 		},
 	}
 

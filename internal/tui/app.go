@@ -597,7 +597,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	if sess.Title == "New session" {
 		sess.Title = sessionTitle(input)
 	}
-	sess.Messages = append(sess.Messages, client.Message{Role: "user", Content: input})
+	sess.Messages = append(sess.Messages, client.Message{Role: "user", Content: client.NewTextContent(input)})
 
 	m.spinnerIdx = 0
 	return m, tea.Batch(m.runAgentLoop(input, sess.Messages[:len(sess.Messages)-1]), spinnerTick())
@@ -611,7 +611,7 @@ func (m *Model) runAgentLoop(query string, history []client.Message) tea.Cmd {
 		result, usage, err := m.agentLoop.Run(context.Background(), query, history)
 		if err == nil && result != "" {
 			sess := m.sessions.Current()
-			sess.Messages = append(sess.Messages, client.Message{Role: "assistant", Content: result})
+			sess.Messages = append(sess.Messages, client.Message{Role: "assistant", Content: client.NewTextContent(result)})
 		}
 		return agentDoneMsg{result: result, usage: usage, err: err}
 	}
@@ -625,9 +625,9 @@ func (m *Model) loadSessionHistory(sess *session.Session) {
 		switch msg.Role {
 		case "user":
 			pm := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Render(">")
-			m.appendOutput(fmt.Sprintf("%s %s", pm, msg.Content))
+			m.appendOutput(fmt.Sprintf("%s %s", pm, msg.Content.Text()))
 		case "assistant":
-			m.appendOutput(msg.Content)
+			m.appendOutput(msg.Content.Text())
 			m.appendOutput("")
 		}
 	}
@@ -764,7 +764,7 @@ func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			// Find the last assistant message
 			for i := len(sess.Messages) - 1; i >= 0; i-- {
 				if sess.Messages[i].Role == "assistant" {
-					return m, copyToClipboard(sess.Messages[i].Content)
+					return m, copyToClipboard(sess.Messages[i].Content.Text())
 				}
 			}
 			m.appendOutput("No assistant message to copy")
@@ -995,8 +995,8 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 			m.sendOutput(renderMarkdown(finalResult))
 			sess := m.sessions.Current()
 			sess.Messages = append(sess.Messages,
-				client.Message{Role: "user", Content: query},
-				client.Message{Role: "assistant", Content: finalResult},
+				client.Message{Role: "user", Content: client.NewTextContent(query)},
+				client.Message{Role: "assistant", Content: client.NewTextContent(finalResult)},
 			)
 		} else {
 			return agentDoneMsg{err: fmt.Errorf("workflow completed but returned no response")}
