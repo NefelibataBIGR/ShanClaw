@@ -709,7 +709,7 @@ go vet ./...                 # lint
 
 ## Known Limitations
 
-- **Vision**: Screenshot analysis works via base64 encoding through MCP filesystem tools, which is token-intensive. Native image content block support (sending images directly to the vision LLM) is not yet implemented — requires Shannon API image input support.
+- **Vision**: Screenshots are captured, resized (1200px max), and sent as base64 image content blocks to the LLM. The computer tool uses Anthropic's native `computer_20251124` schema with coordinate scaling for retina displays. Vision models may blend what they see with training knowledge — verify critical details.
 - **Streaming**: One-shot mode does not stream responses; it waits for the full LLM response before displaying.
 - **Windows/Linux**: Local tools (clipboard, notifications, AppleScript, screenshot, computer) are macOS-only.
 

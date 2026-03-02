@@ -73,6 +73,12 @@ type streamDeltaMsg struct {
 	delta string
 }
 
+// toolCallMsg signals that a tool call is about to start — flushes streaming text first.
+type toolCallMsg struct {
+	name string
+	args string
+}
+
 type toolResultEntry struct {
 	name    string
 	args    string
@@ -92,6 +98,7 @@ type Model struct {
 	output        []string
 	pendingPrints []string
 	streamingText  string
+	streamingDone  bool
 	spinnerIdx     int
 	spinnerTexts   []string
 	lastSessions      []session.SessionSummary // cached for session picker
@@ -431,7 +438,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentDoneMsg:
 		m.state = stateInput
 		if m.streamingText != "" {
-			m.appendOutput(m.streamingText)
+			m.appendOutput(m.streamingText) // flush remaining incomplete line
 			m.streamingText = ""
 		}
 		if msg.err != nil {
@@ -488,6 +495,24 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case streamDeltaMsg:
 		m.streamingText += msg.delta
+		// Flush completed lines to scrollback immediately (typewriter effect).
+		// Only keep the last incomplete line in streamingText for View().
+		if idx := strings.LastIndex(m.streamingText, "\n"); idx >= 0 {
+			completedLines := m.streamingText[:idx]
+			m.streamingText = m.streamingText[idx+1:]
+			m.appendOutput(completedLines)
+		}
+		return m, nil
+
+	case toolCallMsg:
+		// Flush any pending streaming text BEFORE showing tool indicator.
+		// This ensures preamble text ("I'll search for...") appears above tool lines.
+		if m.streamingText != "" {
+			m.appendOutput(m.streamingText)
+			m.streamingText = ""
+		}
+		m.pendingToolName = msg.name
+		m.pendingToolArgs = msg.args
 		return m, nil
 
 	case clipboardResultMsg:
@@ -532,8 +557,7 @@ func (m *Model) View() string {
 		sb.WriteString(barStyle.Render(strings.Repeat("─", barWidth)) + rightInfo)
 	case stateProcessing:
 		if m.streamingText != "" {
-			lines := strings.Split(m.streamingText, "\n")
-			sb.WriteString(lines[len(lines)-1])
+			sb.WriteString(m.streamingText)
 		} else if m.pendingToolName != "" {
 			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 			keyArg := toolKeyArg(m.pendingToolName, m.pendingToolArgs)
@@ -592,6 +616,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	// Local agent loop
 	m.state = stateProcessing
+	m.streamingDone = false
 	sess := m.sessions.Current()
 	// Set title from first user message
 	if sess.Title == "New session" {
@@ -1050,8 +1075,12 @@ type tuiEventHandler struct {
 }
 
 func (h *tuiEventHandler) OnToolCall(name string, args string) {
-	h.model.pendingToolName = name
-	h.model.pendingToolArgs = args
+	// Reset streaming flag — after tool execution, the next LLM call is a fresh iteration.
+	// This prevents streamingDone from carrying over and suppressing the final response.
+	h.model.streamingDone = false
+	if h.model.program != nil {
+		h.model.program.Send(toolCallMsg{name: name, args: truncate(args, 200)})
+	}
 }
 
 func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
@@ -1085,11 +1114,25 @@ func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.To
 }
 
 func (h *tuiEventHandler) OnText(text string) {
+	// If streaming deltas already flushed this content, skip the duplicate render.
+	// streamingDone is set when OnStreamDelta receives content for this LLM call.
+	if h.model.streamingDone {
+		h.model.streamingDone = false
+		// Flush any remaining incomplete line that deltas didn't finish
+		if h.model.streamingText != "" {
+			if h.model.program != nil {
+				h.model.program.Send(streamDeltaMsg{delta: "\n"})
+			}
+		}
+		return
+	}
+	// Non-streaming path (no deltas received): render markdown and display
 	h.model.sendOutput(truncateLongResponse(renderMarkdown(text)))
 }
 
 func (h *tuiEventHandler) OnStreamDelta(delta string) {
 	if h.model.program != nil {
+		h.model.streamingDone = true // mark that we received streaming content
 		h.model.program.Send(streamDeltaMsg{delta: delta})
 	}
 }
