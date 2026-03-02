@@ -13,14 +13,14 @@ import (
 	"github.com/Kocoro-lab/shan/internal/session"
 )
 
-// ASCII crab — compact (4 lines, ~17 chars wide).
-// Two claw frames for pinch animation.
-var crabClawOpen = `(\)    (/)` // claws open
-var crabClawShut = `/)      (\` // claws shut
+// ASCII crab — two claw frames for pinch animation.
+var crabClawOpen = ` (\)      (/)` // claws open
+var crabClawShut = ` (/)      (\` // claws shut
 var crabBody = []string{
-	` (° .°)  `,
-	`  )   (  `,
-	` _/| |\_  `,
+	`  ( °  ° )`,
+	`   )    (`,
+	`  /|    |\`,
+	` (_|    |_)`,
 }
 
 // Color palette for the startup header.
@@ -35,7 +35,7 @@ var (
 const (
 	headerTotalFrames = 13 // 6 claw-pinch frames + info reveal
 	headerTickMs      = 80 // ms per frame (~1s total)
-	headerLeftWidth   = 22 // left column width for two-column layout
+	headerLeftWidth   = 28 // left column visual width
 	clawAnimFrames    = 6  // frames 0-5: claw animation
 )
 
@@ -58,14 +58,14 @@ func headerFrameTick() tea.Cmd {
 // renderStartupHeader builds the animated two-column startup header for the given frame.
 // tipIdx and cwd should be pre-computed by the caller (no I/O inside this function).
 func renderStartupHeader(frame int, width int, version string, modelTier string, endpoint string, cwd string, sessions []session.SessionSummary, tipIdx int) string {
-	if width < 40 {
-		width = 40
+	if width < 50 {
+		width = 50
 	}
-	if width > 90 {
-		width = 90
+	if width > 100 {
+		width = 100
 	}
 
-	innerWidth := width - 2 // inside box borders
+	innerWidth := width - 2 // inside box borders (│ on each side)
 	rightWidth := innerWidth - headerLeftWidth - 1 // -1 for middle divider
 
 	// --- Build left column lines ---
@@ -82,51 +82,39 @@ func renderStartupHeader(frame int, width int, version string, modelTier string,
 	}
 	leftLines = append(leftLines, "")
 
-	// Model + CWD (frame 7+).
-	if frame >= 7 {
-		modelStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-		cwdStyle := lipgloss.NewStyle().Foreground(dimColor)
-		leftLines = append(leftLines, "  "+modelStyle.Render(modelTier))
-		leftLines = append(leftLines, "  "+cwdStyle.Render(truncateStr(cwd, headerLeftWidth-4)))
-	}
+	// Model + CWD + Endpoint — always visible.
+	modelStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	cwdStyle := lipgloss.NewStyle().Foreground(dimColor)
+	epStyle := lipgloss.NewStyle().Foreground(dimColor)
+	leftLines = append(leftLines, "  "+modelStyle.Render(modelTier))
+	leftLines = append(leftLines, "  "+cwdStyle.Render(truncateStr(cwd, headerLeftWidth-4)))
+	leftLines = append(leftLines, "  "+epStyle.Render(truncateStr(endpoint, headerLeftWidth-4)))
 
-	// Endpoint (frame 8+).
-	if frame >= 8 {
-		epStyle := lipgloss.NewStyle().Foreground(dimColor)
-		leftLines = append(leftLines, "  "+epStyle.Render(truncateStr(endpoint, headerLeftWidth-4)))
-	}
-
-	// --- Build right column lines ---
+	// --- Build right column lines (all immediate) ---
 	var rightLines []string
 
-	// Tips header + tip (frame 9+).
-	if frame >= 9 {
-		tipHeader := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("Tips")
-		tipStyle := lipgloss.NewStyle().Foreground(dimColor)
-		rightLines = append(rightLines, "  "+tipHeader)
-		rightLines = append(rightLines, "  "+tipStyle.Render(truncateStr(headerTips[tipIdx%len(headerTips)], rightWidth-4)))
-	}
+	// Tips.
+	tipHeader := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render("Tips")
+	tipStyle := lipgloss.NewStyle().Foreground(dimColor)
+	rightLines = append(rightLines, " "+tipHeader)
+	rightLines = append(rightLines, " "+tipStyle.Render(truncateStr(headerTips[tipIdx%len(headerTips)], rightWidth-3)))
 
-	// Divider (frame 10+).
-	if frame >= 10 {
-		rightLines = append(rightLines, "  "+lipgloss.NewStyle().Foreground(dimColor).Render(strings.Repeat("─", rightWidth-4)))
-	}
+	// Divider.
+	rightLines = append(rightLines, " "+lipgloss.NewStyle().Foreground(dimColor).Render(strings.Repeat("─", rightWidth-2)))
 
-	// Recent activity (frame 11+).
-	if frame >= 11 {
-		actHeader := lipgloss.NewStyle().Foreground(infoColor).Bold(true).Render("Recent activity")
-		rightLines = append(rightLines, "  "+actHeader)
+	// Recent activity.
+	actHeader := lipgloss.NewStyle().Foreground(infoColor).Bold(true).Render("Recent activity")
+	rightLines = append(rightLines, " "+actHeader)
 
-		if len(sessions) == 0 {
-			rightLines = append(rightLines, "  "+lipgloss.NewStyle().Foreground(dimColor).Render("No recent sessions"))
-		} else {
-			s := sessions[0]
-			title := truncateStr(s.Title, rightWidth-8)
-			titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-			agoStyle := lipgloss.NewStyle().Foreground(dimColor)
-			rightLines = append(rightLines, "  "+titleStyle.Render(title))
-			rightLines = append(rightLines, "  "+agoStyle.Render(fmt.Sprintf("%s, %d msgs", timeAgo(s.CreatedAt), s.MsgCount)))
-		}
+	if len(sessions) == 0 {
+		rightLines = append(rightLines, " "+lipgloss.NewStyle().Foreground(dimColor).Render("No recent sessions"))
+	} else {
+		s := sessions[0]
+		title := truncateStr(s.Title, rightWidth-4)
+		titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		agoStyle := lipgloss.NewStyle().Foreground(dimColor)
+		rightLines = append(rightLines, " "+titleStyle.Render(title))
+		rightLines = append(rightLines, " "+agoStyle.Render(fmt.Sprintf("%s, %d msgs", timeAgo(s.CreatedAt), s.MsgCount)))
 	}
 
 	// Equalize line counts between columns.
@@ -142,19 +130,20 @@ func renderStartupHeader(frame int, width int, version string, modelTier string,
 
 	var sb strings.Builder
 
-	// Top border.
-	titlePart := fmt.Sprintf("─ Shannon CLI %s ", version)
-	remaining := innerWidth - len([]rune(titlePart))
+	// Top border with title.
+	titlePart := "─ Shannon CLI "
+	titleVisWidth := lipgloss.Width(titlePart)
+	remaining := innerWidth - titleVisWidth
 	if remaining < 0 {
 		remaining = 0
 	}
 	sb.WriteString(bdr.Render("╭"+titlePart+strings.Repeat("─", remaining)+"╮") + "\n")
 
-	// Content rows.
+	// Content rows: │ left │ right │
 	divider := bdr.Render("│")
 	for i := range leftLines {
-		left := padRight(leftLines[i], headerLeftWidth)
-		right := padRight(rightLines[i], rightWidth)
+		left := padToWidth(leftLines[i], headerLeftWidth)
+		right := padToWidth(rightLines[i], rightWidth)
 		sb.WriteString(bdr.Render("│") + left + divider + right + bdr.Render("│") + "\n")
 	}
 
@@ -164,14 +153,16 @@ func renderStartupHeader(frame int, width int, version string, modelTier string,
 	return sb.String()
 }
 
-// colorizeCrab renders a crab line in red.
+// colorizeCrab renders a crab line in orange.
 func colorizeCrab(line string) string {
 	return lipgloss.NewStyle().Foreground(crabColor).Render(line)
 }
 
-// padRight pads a (possibly ANSI-styled) string so its visible width reaches targetWidth.
-func padRight(styled string, targetWidth int) string {
-	visible := len([]rune(stripAnsi(styled)))
+// padToWidth pads a (possibly ANSI-styled) string so its visible width
+// reaches targetWidth. Uses lipgloss.Width which correctly handles
+// ANSI escape codes and double-width CJK characters.
+func padToWidth(styled string, targetWidth int) string {
+	visible := lipgloss.Width(styled)
 	if visible >= targetWidth {
 		return styled
 	}

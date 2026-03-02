@@ -32,15 +32,15 @@ type browserArgs struct {
 func (t *BrowserTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name: "browser",
-		Description: "Control a browser with an isolated profile (no access to user's logged-in sessions or saved data). " +
-			"Launches Chrome for Testing or a temporary Chrome instance. " +
-			"Actions: navigate, click, type, screenshot, read_page, execute_js, wait, close.",
+		Description: "Control a headless browser with an isolated profile (no access to user's logged-in sessions or saved data). " +
+			"Best for: web scraping, searching, reading public pages, testing. " +
+			"Actions: navigate, click, type, scroll, screenshot, read_page, execute_js, wait, close.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":   map[string]any{"type": "string", "description": "Action to perform: navigate, click, type, screenshot, read_page, execute_js, wait, close"},
+				"action":   map[string]any{"type": "string", "description": "Action to perform: navigate, click, type, scroll, screenshot, read_page, execute_js, wait, close"},
 				"url":      map[string]any{"type": "string", "description": "URL to navigate to (for navigate action)"},
-				"selector": map[string]any{"type": "string", "description": "CSS selector (for click, type, read_page, wait actions)"},
+				"selector": map[string]any{"type": "string", "description": "CSS selector (for click, type, read_page, scroll, wait actions)"},
 				"text":     map[string]any{"type": "string", "description": "Text to type (for type action)"},
 				"script":   map[string]any{"type": "string", "description": "JavaScript to execute (for execute_js action)"},
 				"timeout":  map[string]any{"type": "integer", "description": "Timeout in seconds (default: 30)"},
@@ -74,6 +74,8 @@ func (t *BrowserTool) Run(ctx context.Context, argsJSON string) (agent.ToolResul
 		return t.click(ctx, args, timeout)
 	case "type":
 		return t.typeText(ctx, args, timeout)
+	case "scroll":
+		return t.scroll(ctx, args, timeout)
 	case "screenshot":
 		return t.screenshot(ctx, timeout)
 	case "read_page":
@@ -204,6 +206,39 @@ func (t *BrowserTool) typeText(_ context.Context, args browserArgs, timeout time
 	}
 
 	return agent.ToolResult{Content: fmt.Sprintf("Typed into: %s", args.Selector)}, nil
+}
+
+func (t *BrowserTool) scroll(_ context.Context, args browserArgs, timeout time.Duration) (agent.ToolResult, error) {
+	bCtx, err := t.ensureBrowser()
+	if err != nil {
+		return agent.ToolResult{Content: fmt.Sprintf("failed to start browser: %v", err), IsError: true}, nil
+	}
+
+	tCtx, cancel := context.WithTimeout(bCtx, timeout)
+	defer cancel()
+
+	// If a selector is provided, scroll that element into view.
+	// Otherwise, scroll to the bottom of the page.
+	if args.Selector != "" {
+		err = chromedp.Run(tCtx,
+			chromedp.ScrollIntoView(args.Selector),
+		)
+		if err != nil {
+			return agent.ToolResult{Content: fmt.Sprintf("scroll error: %v", err), IsError: true}, nil
+		}
+		return agent.ToolResult{Content: fmt.Sprintf("Scrolled to: %s", args.Selector)}, nil
+	}
+
+	// Scroll to page bottom
+	var scrollHeight int
+	err = chromedp.Run(tCtx,
+		chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight); document.body.scrollHeight`, &scrollHeight),
+	)
+	if err != nil {
+		return agent.ToolResult{Content: fmt.Sprintf("scroll error: %v", err), IsError: true}, nil
+	}
+
+	return agent.ToolResult{Content: fmt.Sprintf("Scrolled to bottom (height: %d)", scrollHeight)}, nil
 }
 
 func (t *BrowserTool) screenshot(_ context.Context, timeout time.Duration) (agent.ToolResult, error) {
