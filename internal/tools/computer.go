@@ -48,13 +48,57 @@ func (t *ComputerTool) captureAfterAction(result agent.ToolResult) agent.ToolRes
 }
 
 type computerArgs struct {
-	Action string `json:"action"`
-	X      int    `json:"x,omitempty"`
-	Y      int    `json:"y,omitempty"`
-	Text   string `json:"text,omitempty"`
-	Keys   string `json:"keys,omitempty"`
-	Button string `json:"button,omitempty"`
-	Clicks int    `json:"clicks,omitempty"`
+	Action     string `json:"action"`
+	X          int    `json:"x,omitempty"`
+	Y          int    `json:"y,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Keys       string `json:"keys,omitempty"`
+	Button     string `json:"button,omitempty"`
+	Clicks     int    `json:"clicks,omitempty"`
+	Coordinate []int  `json:"coordinate,omitempty"` // Anthropic native: [x, y]
+}
+
+// normalizeArgs maps Anthropic native action names and coordinate format
+// to our internal format.
+func normalizeArgs(args *computerArgs) {
+	// Map Anthropic coordinate array to x, y
+	if len(args.Coordinate) == 2 {
+		args.X = args.Coordinate[0]
+		args.Y = args.Coordinate[1]
+	}
+
+	// Map Anthropic native action names to our actions
+	switch args.Action {
+	case "left_click":
+		args.Action = "click"
+		args.Button = "left"
+		args.Clicks = 1
+	case "right_click":
+		args.Action = "click"
+		args.Button = "right"
+		args.Clicks = 1
+	case "double_click":
+		args.Action = "click"
+		args.Button = "left"
+		args.Clicks = 2
+	case "middle_click":
+		args.Action = "click"
+		args.Button = "left" // fallback — no middle click support
+		args.Clicks = 1
+	case "triple_click":
+		args.Action = "click"
+		args.Button = "left"
+		args.Clicks = 3
+	case "mouse_move":
+		args.Action = "move"
+	case "key":
+		args.Action = "hotkey"
+		if args.Text != "" && args.Keys == "" {
+			args.Keys = args.Text // Anthropic sends key combo in "text" field
+		}
+	case "screenshot":
+		args.Action = "screenshot"
+	}
 }
 
 func (t *ComputerTool) Info() agent.ToolInfo {
@@ -111,6 +155,8 @@ func (t *ComputerTool) Run(ctx context.Context, argsJSON string) (agent.ToolResu
 		return agent.ToolResult{Content: "missing required parameter: action", IsError: true}, nil
 	}
 
+	normalizeArgs(&args)
+
 	switch args.Action {
 	case "click":
 		return t.click(ctx, args)
@@ -120,12 +166,25 @@ func (t *ComputerTool) Run(ctx context.Context, argsJSON string) (agent.ToolResu
 		return t.hotkey(ctx, args)
 	case "move":
 		return t.move(ctx, args)
+	case "screenshot":
+		return t.screenshot()
 	default:
 		return agent.ToolResult{
-			Content: fmt.Sprintf("unknown action: %q (valid: click, type, hotkey, move)", args.Action),
+			Content: fmt.Sprintf("unknown action: %q (valid: click, type, hotkey, move, screenshot)", args.Action),
 			IsError: true,
 		}, nil
 	}
+}
+
+func (t *ComputerTool) screenshot() (agent.ToolResult, error) {
+	path, block, err := CaptureAndEncode(DefaultAPIWidth)
+	if err != nil {
+		return agent.ToolResult{Content: fmt.Sprintf("screenshot error: %v", err), IsError: true}, nil
+	}
+	return agent.ToolResult{
+		Content: fmt.Sprintf("Screenshot captured. Saved to: %s", path),
+		Images:  []agent.ImageBlock{block},
+	}, nil
 }
 
 func (t *ComputerTool) click(ctx context.Context, args computerArgs) (agent.ToolResult, error) {

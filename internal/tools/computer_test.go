@@ -215,6 +215,75 @@ func TestComputer_BuildHotkeyScript_UnknownModifier(t *testing.T) {
 	}
 }
 
+func TestComputer_NormalizeArgs_LeftClick(t *testing.T) {
+	args := &computerArgs{Action: "left_click", Coordinate: []int{640, 400}}
+	normalizeArgs(args)
+	if args.Action != "click" {
+		t.Errorf("expected action 'click', got %q", args.Action)
+	}
+	if args.X != 640 || args.Y != 400 {
+		t.Errorf("expected (640, 400), got (%d, %d)", args.X, args.Y)
+	}
+	if args.Button != "left" {
+		t.Errorf("expected button 'left', got %q", args.Button)
+	}
+}
+
+func TestComputer_NormalizeArgs_RightClick(t *testing.T) {
+	args := &computerArgs{Action: "right_click", Coordinate: []int{100, 200}}
+	normalizeArgs(args)
+	if args.Action != "click" || args.Button != "right" {
+		t.Errorf("expected click/right, got %s/%s", args.Action, args.Button)
+	}
+}
+
+func TestComputer_NormalizeArgs_DoubleClick(t *testing.T) {
+	args := &computerArgs{Action: "double_click", Coordinate: []int{50, 50}}
+	normalizeArgs(args)
+	if args.Action != "click" || args.Clicks != 2 {
+		t.Errorf("expected click with 2 clicks, got %s/%d", args.Action, args.Clicks)
+	}
+}
+
+func TestComputer_NormalizeArgs_MouseMove(t *testing.T) {
+	args := &computerArgs{Action: "mouse_move", Coordinate: []int{300, 400}}
+	normalizeArgs(args)
+	if args.Action != "move" {
+		t.Errorf("expected 'move', got %q", args.Action)
+	}
+	if args.X != 300 || args.Y != 400 {
+		t.Errorf("expected (300, 400), got (%d, %d)", args.X, args.Y)
+	}
+}
+
+func TestComputer_NormalizeArgs_Key(t *testing.T) {
+	args := &computerArgs{Action: "key", Text: "Return"}
+	normalizeArgs(args)
+	if args.Action != "hotkey" {
+		t.Errorf("expected 'hotkey', got %q", args.Action)
+	}
+	if args.Keys != "Return" {
+		t.Errorf("expected keys 'Return', got %q", args.Keys)
+	}
+}
+
+func TestComputer_NormalizeArgs_Screenshot(t *testing.T) {
+	args := &computerArgs{Action: "screenshot"}
+	normalizeArgs(args)
+	if args.Action != "screenshot" {
+		t.Errorf("expected 'screenshot', got %q", args.Action)
+	}
+}
+
+func TestComputer_NormalizeArgs_NoOp(t *testing.T) {
+	// Our custom actions pass through unchanged
+	args := &computerArgs{Action: "click", X: 100, Y: 200}
+	normalizeArgs(args)
+	if args.Action != "click" || args.X != 100 || args.Y != 200 {
+		t.Errorf("expected unchanged, got %s (%d, %d)", args.Action, args.X, args.Y)
+	}
+}
+
 func TestComputer_ScaleXY(t *testing.T) {
 	tool := &ComputerTool{screenW: 1440, screenH: 900}
 	x, y := tool.scaleXY(640, 400)
