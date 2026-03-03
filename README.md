@@ -25,7 +25,7 @@ Requires **Go 1.25+**:
 ```bash
 git clone https://github.com/Kocoro-lab/shan.git
 cd shan
-go install -ldflags "-X github.com/Kocoro-lab/shan/cmd.Version=0.1.0" .
+go install .
 ```
 
 > **Note:** `go install` places the binary in `$GOPATH/bin` (default: `~/go/bin`).
