@@ -867,17 +867,17 @@ func spinnerTick() tea.Cmd {
 	})
 }
 
-// renderWaveText renders text with a shimmer effect matching Claude Code's spinner.
-// Base color 174 (muted salmon "Claude orange") with a 3-char-wide highlight at
-// color 216 (light peach) that sweeps across the text.
+// renderWaveText renders text with a shimmer effect.
+// Base color 208 (orange) with a 3-char-wide highlight at
+// 214 (light orange) that sweeps across the text.
 func renderWaveText(text string, tick int) string {
 	runes := []rune(text)
 	if len(runes) == 0 {
 		return ""
 	}
 	waveCenter := tick % (len(runes) + 4)
-	baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("174"))
-	shimmerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("216"))
+	baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
+	shimmerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	var sb strings.Builder
 	for i, r := range runes {
 		dist := waveCenter - i
@@ -976,7 +976,11 @@ func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if len(parts) > 1 {
 			m.cfg.ModelTier = parts[1]
 			m.agentLoop.SetModelTier(parts[1])
-			m.appendOutput(fmt.Sprintf("Model tier: %s", parts[1]))
+			if err := config.Save(m.cfg); err != nil {
+				m.appendOutput(fmt.Sprintf("Model tier: %s (failed to save: %v)", parts[1], err))
+			} else {
+				m.appendOutput(fmt.Sprintf("Model tier: %s (saved)", parts[1]))
+			}
 		} else {
 			m.appendOutput(fmt.Sprintf("Current model tier: %s", m.cfg.ModelTier))
 		}

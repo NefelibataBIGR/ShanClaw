@@ -13,8 +13,8 @@ func TestRenderStartupHeader_FirstFrame(t *testing.T) {
 	if !strings.Contains(result, "Shannon CLI") {
 		t.Error("first frame should contain title in top border")
 	}
-	if !strings.Contains(result, ")") {
-		t.Error("first frame should show crab")
+	if !strings.Contains(result, "◢") {
+		t.Error("first frame should show crab logo")
 	}
 }
 
@@ -27,8 +27,8 @@ func TestRenderStartupHeader_FinalFrame(t *testing.T) {
 	if !strings.Contains(result, "Shannon CLI") {
 		t.Error("final frame should contain title")
 	}
-	if !strings.Contains(result, ")") {
-		t.Error("final frame should contain crab")
+	if !strings.Contains(result, "◥") {
+		t.Error("final frame should contain crab logo")
 	}
 	if !strings.Contains(result, "Tips") {
 		t.Error("final frame should contain Tips section")
@@ -60,31 +60,19 @@ func TestRenderStartupHeader_WideTerminal(t *testing.T) {
 	}
 }
 
-func TestRenderStartupHeader_CrabAlwaysVisible(t *testing.T) {
-	// Even frame 0 should show the full crab (no fade-in).
+func TestRenderStartupHeader_LogoAlwaysVisible(t *testing.T) {
 	result := renderStartupHeader(0, 80, "dev", "small", "https://api.test.com", "/tmp", nil, 0)
-	if !strings.Contains(result, "(") {
-		t.Error("frame 0 should show crab claws")
+	if !strings.Contains(result, "◢") {
+		t.Error("frame 0 should show crab logo")
 	}
 }
 
-func TestRenderStartupHeader_ClawAnimation(t *testing.T) {
-	// Even frames = claws open, odd frames = claws shut.
-	open := renderStartupHeader(0, 80, "dev", "small", "https://api.test.com", "/tmp", nil, 0)
-	shut := renderStartupHeader(1, 80, "dev", "small", "https://api.test.com", "/tmp", nil, 0)
-	if open == shut {
-		t.Error("claw animation frames should differ between open and shut")
-	}
-}
-
-func TestColorizeCrab_ReturnsNonEmpty(t *testing.T) {
-	line := "(° .°)"
-	result := colorizeCrab(line)
-	if result == "" {
-		t.Error("colorizeCrab should return non-empty string")
-	}
-	if !strings.Contains(stripAnsi(result), "°") {
-		t.Error("should contain crab face characters")
+func TestRenderStartupHeader_LegAnimation(t *testing.T) {
+	// Frames 0-2 show pose A, frames 3-5 show pose B.
+	poseA := renderStartupHeader(0, 80, "dev", "small", "https://api.test.com", "/tmp", nil, 0)
+	poseB := renderStartupHeader(3, 80, "dev", "small", "https://api.test.com", "/tmp", nil, 0)
+	if poseA == poseB {
+		t.Error("animation frames from different poses should differ")
 	}
 }
 

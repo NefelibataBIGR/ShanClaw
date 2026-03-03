@@ -13,30 +13,33 @@ import (
 	"github.com/Kocoro-lab/shan/internal/session"
 )
 
-// ASCII crab — two claw frames for pinch animation.
-var crabClawOpen = ` (\)      (/)` // claws open
-var crabClawShut = ` (/)      (\` // claws shut
-var crabBody = []string{
-	`  ( °  ° )`,
-	`   )    (`,
-	`  /|    |\`,
-	` (_|    |_)`,
+// Geometric crab — two animation frames (legs alternate).
+// Note: ◢◣◥◤█ render as 2-cell wide in most terminals.
+// Both lines use matching widths: claws=4geo+2sp=10cells, body=5geo=10cells.
+var crabFrame0 = []string{
+	"        ◢◣ ◢◣",
+	"        ◥███◤",
+	"         ╹╹",
+}
+var crabFrame1 = []string{
+	"        ◢◣ ◢◣",
+	"        ◥███◤",
+	"         ╹ ╹",
 }
 
 // Color palette for the startup header.
 var (
-	crabColor   = lipgloss.Color("174") // Claude orange (#d78787) — entire crab
-	borderColor = lipgloss.Color("174") // Claude orange — box border
-	accentColor = lipgloss.Color("174") // Claude orange — section headers
-	dimColor    = lipgloss.Color("243") // medium gray — secondary text
-	infoColor   = lipgloss.Color("39")  // blue — activity header
+	crabColor   = lipgloss.Color("208") // orange — crab logo
+	borderColor = lipgloss.Color("208") // orange — box border
+	accentColor = lipgloss.Color("208") // orange — section headers
+	dimColor    = lipgloss.Color("243")     // medium gray — secondary text
+	infoColor   = lipgloss.Color("39")      // blue — activity header
 )
 
 const (
-	headerTotalFrames = 13 // 6 claw-pinch frames + info reveal
-	headerTickMs      = 80 // ms per frame (~1s total)
-	headerLeftWidth   = 28 // left column visual width
-	clawAnimFrames    = 6  // frames 0-5: claw animation
+	headerTotalFrames = 6  // sparkle-blink frames (~0.5s total)
+	headerTickMs      = 80 // ms per frame
+	headerLeftWidth   = 22 // left column visual width
 )
 
 // Tips shown in the info section of the startup header.
@@ -65,22 +68,21 @@ func renderStartupHeader(frame int, width int, version string, modelTier string,
 		width = 100
 	}
 
-	innerWidth := width - 2 // inside box borders (│ on each side)
+	innerWidth := width - 2                        // inside box borders (│ on each side)
 	rightWidth := innerWidth - headerLeftWidth - 1 // -1 for middle divider
 
 	// --- Build left column lines ---
 	var leftLines []string
 
-	// Crab: always fully visible, claws alternate during frames 0-5.
-	clawLine := crabClawOpen
-	if frame < clawAnimFrames && frame%2 == 1 {
-		clawLine = crabClawShut
+	// Crab logo: legs shift every 3 ticks (~240ms per pose).
+	crabStyle := lipgloss.NewStyle().Foreground(crabColor)
+	crabLines := crabFrame0
+	if (frame/3)%2 == 1 {
+		crabLines = crabFrame1
 	}
-	leftLines = append(leftLines, colorizeCrab(clawLine))
-	for _, line := range crabBody {
-		leftLines = append(leftLines, colorizeCrab(line))
+	for _, line := range crabLines {
+		leftLines = append(leftLines, crabStyle.Render(line))
 	}
-	leftLines = append(leftLines, "")
 
 	// Model + CWD + Endpoint — always visible.
 	modelStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
@@ -151,11 +153,6 @@ func renderStartupHeader(frame int, width int, version string, modelTier string,
 	sb.WriteString(bdr.Render("╰" + strings.Repeat("─", innerWidth) + "╯"))
 
 	return sb.String()
-}
-
-// colorizeCrab renders a crab line in orange.
-func colorizeCrab(line string) string {
-	return lipgloss.NewStyle().Foreground(crabColor).Render(line)
 }
 
 // padToWidth pads a (possibly ANSI-styled) string so its visible width
