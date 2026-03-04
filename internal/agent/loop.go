@@ -336,7 +336,11 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 			// If response was truncated by max_tokens, accumulate the partial text
 			// and continue the loop so the LLM can finish its output.
-			if isMaxTokensTruncation(resp.FinishReason) && resp.OutputText != "" && continuationCount < maxContinuations {
+			// Detection: explicit finish_reason OR heuristic (response ends abruptly
+			// mid-sentence — no terminal punctuation, and output is substantial).
+			isTruncated := isMaxTokensTruncation(resp.FinishReason) ||
+				(resp.FinishReason == "" && looksAbruptlyTruncated(resp.OutputText))
+			if isTruncated && resp.OutputText != "" && continuationCount < maxContinuations {
 				continuationCount++
 				truncatedText.WriteString(resp.OutputText)
 				messages = append(messages, client.Message{
@@ -1165,6 +1169,30 @@ func isMaxTokensTruncation(reason string) bool {
 		return true
 	}
 	return false
+}
+
+// looksAbruptlyTruncated detects responses that were likely truncated by max_tokens
+// when the gateway doesn't provide an explicit finish_reason. Heuristic: substantial
+// text (>500 runes) that doesn't end with terminal punctuation or a closing markdown tag.
+func looksAbruptlyTruncated(text string) bool {
+	if len([]rune(text)) < 500 {
+		return false
+	}
+	trimmed := strings.TrimRight(text, " \t\n\r")
+	if trimmed == "" {
+		return false
+	}
+	lastRune := []rune(trimmed)[len([]rune(trimmed))-1]
+	// Terminal punctuation (including CJK)
+	switch lastRune {
+	case '.', '!', '?', '。', '！', '？', '…', ')', '）', ']', '】', '"', '\u201D', '`':
+		return false
+	}
+	// Ends with a markdown closing tag
+	if strings.HasSuffix(trimmed, "```") || strings.HasSuffix(trimmed, "---") {
+		return false
+	}
+	return true
 }
 
 // extractPathArg extracts the "path" field from a tool's JSON arguments.
