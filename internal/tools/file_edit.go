@@ -40,6 +40,11 @@ func (t *FileEditTool) Run(ctx context.Context, argsJSON string) (agent.ToolResu
 		return agent.ToolResult{Content: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
 
+	// Enforce read-before-edit
+	if err := agent.CheckReadBeforeWrite(ctx, args.Path); err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+
 	data, err := os.ReadFile(args.Path)
 	if err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("error reading file: %v", err), IsError: true}, nil

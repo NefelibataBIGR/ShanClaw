@@ -38,6 +38,13 @@ func (t *FileWriteTool) Run(ctx context.Context, argsJSON string) (agent.ToolRes
 		return agent.ToolResult{Content: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
 
+	// Enforce read-before-write for existing files (new files are fine)
+	if _, err := os.Stat(args.Path); err == nil {
+		if err := agent.CheckReadBeforeWrite(ctx, args.Path); err != nil {
+			return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Dir(args.Path), 0755); err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("error creating directory: %v", err), IsError: true}, nil
 	}

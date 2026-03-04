@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -213,6 +214,10 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 	toolSchemas := a.tools.Schemas()
 	usage := &TurnUsage{}
+
+	// Read tracker: enforces read-before-edit for file_edit/file_write
+	readTracker := NewReadTracker()
+	ctx = context.WithValue(ctx, readTrackerKey{}, readTracker)
 
 	// Loop behavior constants
 	const maxRecentImages = 5  // keep only last N screenshot messages in context
@@ -452,6 +457,13 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			elapsed := time.Since(startTime)
 			if runErr != nil {
 				result = ToolResult{Content: fmt.Sprintf("tool error: %v", runErr), IsError: true}
+			}
+
+			// Track successful file reads for read-before-edit enforcement
+			if fc.Name == "file_read" && !result.IsError {
+				if p := extractPathArg(argsStr); p != "" {
+					readTracker.MarkRead(p)
+				}
 			}
 
 			// Skip sanitizeResult for image results (base64 data is intentional)
@@ -1017,4 +1029,15 @@ var fabricatedToolCallPattern = regexp.MustCompile(`(?s)(?:I called \w+\(.*?\)\.
 // real tool execution produces results through the tool framework, not as text.
 func looksLikeFabricatedToolCalls(text string) bool {
 	return fabricatedToolCallPattern.MatchString(text)
+}
+
+// extractPathArg extracts the "path" field from a tool's JSON arguments.
+func extractPathArg(argsJSON string) string {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil {
+		return ""
+	}
+	return args.Path
 }
