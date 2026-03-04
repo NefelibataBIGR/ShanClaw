@@ -90,8 +90,9 @@ func buildContext(cwd, sessionInfo string) string {
 
 // truncate limits s to maxChars, appending [truncated] if trimmed.
 func truncate(s string, maxChars int) string {
-	if len(s) <= maxChars {
+	r := []rune(s)
+	if len(r) <= maxChars {
 		return s
 	}
-	return s[:maxChars] + "\n[truncated]"
+	return string(r[:maxChars]) + "\n[truncated]"
 }

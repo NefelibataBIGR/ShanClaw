@@ -705,8 +705,8 @@ func (m *Model) View() string {
 		sb.WriteString(renderDropList(dropListSize, len(m.lastSessions), m.sessionPickerIdx, func(i int) (string, string) {
 			s := m.lastSessions[i]
 			title := s.Title
-			if len(title) > 40 {
-				title = title[:37] + "..."
+			if r := []rune(title); len(r) > 40 {
+				title = string(r[:37]) + "..."
 			}
 			desc := fmt.Sprintf("[%s] %d msgs", s.CreatedAt.Format("Jan 02 15:04"), s.MsgCount)
 			return title, desc
@@ -1474,8 +1474,8 @@ func statusMessage(msg, fallback string) string {
 	if msg == "" {
 		return fallback
 	}
-	if len(msg) > 150 {
-		return msg[:147] + "..."
+	if r := []rune(msg); len(r) > 150 {
+		return string(r[:147]) + "..."
 	}
 	return msg
 }

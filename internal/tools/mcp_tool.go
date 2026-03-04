@@ -34,8 +34,8 @@ func (t *MCPTool) Info() agent.ToolInfo {
 	if desc == "" {
 		desc = fmt.Sprintf("MCP tool from %s", t.serverName)
 	}
-	if len(desc) > maxMCPDescLen {
-		desc = desc[:maxMCPDescLen] + "..."
+	if r := []rune(desc); len(r) > maxMCPDescLen {
+		desc = string(r[:maxMCPDescLen]) + "..."
 	}
 
 	// Strip control characters from tool name

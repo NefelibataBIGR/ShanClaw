@@ -247,12 +247,15 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	// Approval cache: tracks tool+args combos the user already approved this turn
 	approvalCache := NewApprovalCache()
 
+	const maxContinuations = 3 // cap max_tokens continuation attempts
+
 	var (
 		detector             = NewLoopDetector()
 		toolsUsed            = make(map[string]int)
 		totalToolCalls       int
 		lastText             string
 		truncatedText        strings.Builder // accumulates text from max_tokens continuations
+		continuationCount    int
 		afterCheckpoint      bool
 		checkpointDone       bool
 		nudgeCount           int
@@ -333,7 +336,8 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 			// If response was truncated by max_tokens, accumulate the partial text
 			// and continue the loop so the LLM can finish its output.
-			if isMaxTokensTruncation(resp.FinishReason) && resp.OutputText != "" {
+			if isMaxTokensTruncation(resp.FinishReason) && resp.OutputText != "" && continuationCount < maxContinuations {
+				continuationCount++
 				truncatedText.WriteString(resp.OutputText)
 				messages = append(messages, client.Message{
 					Role:    "assistant",

@@ -223,7 +223,7 @@ func (t *ComputerTool) typeText(ctx context.Context, args computerArgs) (agent.T
 	// For short text (≤20 chars), use direct keystroke — fast and reliable.
 	// For longer text, use clipboard paste to avoid focus-loss races during
 	// character-by-character keystroke delivery.
-	if len(args.Text) <= 20 {
+	if len([]rune(args.Text)) <= 20 {
 		escaped := escapeAppleScript(args.Text)
 		script := fmt.Sprintf(`tell application "System Events" to keystroke "%s"`, escaped)
 		out, err := exec.CommandContext(ctx, "osascript", "-e", script).CombinedOutput()
@@ -242,7 +242,9 @@ set the clipboard to "%s"
 delay 0.05
 tell application "System Events" to keystroke "v" using {command down}
 delay 0.1
-set the clipboard to savedClip`, escaped)
+try
+	set the clipboard to savedClip
+end try`, escaped)
 		out, err := exec.CommandContext(ctx, "osascript", "-e", script).CombinedOutput()
 		if err != nil {
 			return agent.ToolResult{

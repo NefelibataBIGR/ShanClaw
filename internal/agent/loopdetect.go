@@ -326,7 +326,7 @@ func (ld *LoopDetector) Check(name string) (LoopAction, string) {
 		}
 	}
 
-	// 5. Sleep detector: bash commands containing sleep indicate polling/waiting
+	// 6. Sleep detector: bash commands containing sleep indicate polling/waiting
 	sleepCount := 0
 	for _, rec := range ld.history {
 		if rec.IsSleep {
