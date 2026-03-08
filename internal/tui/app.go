@@ -26,7 +26,6 @@ import (
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/instructions"
-	"github.com/Kocoro-lab/shan/internal/mcp"
 	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/Kocoro-lab/shan/internal/update"
@@ -232,32 +231,10 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		}
 	}
 
-	reg, toolCleanup := tools.RegisterLocalTools(cfg)
+	reg, toolCleanup, _ := tools.RegisterAll(gateway, cfg, agentOverride)
 
-	// Connect MCP servers (best-effort, before TUI starts)
-	var mcpMgr *mcp.ClientManager
-	if len(cfg.MCPServers) > 0 {
-		mcpMgr = mcp.NewClientManager()
-		mcpTools, mcpErr := mcpMgr.ConnectAll(context.Background(), cfg.MCPServers)
-		if mcpErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: MCP servers: %v\n", mcpErr)
-		}
-		for _, t := range mcpTools {
-			if _, exists := reg.Get(t.Tool.Name); exists {
-				continue
-			}
-			reg.Register(tools.NewMCPTool(t.ServerName, t.Tool, mcpMgr))
-		}
-		_ = len(mcpTools)
-	}
-
-	origCleanup := toolCleanup
-	toolCleanup = func() {
-		origCleanup()
-		if mcpMgr != nil {
-			mcpMgr.Close()
-		}
-	}
+	// Resolve scoped MCP context
+	scopedMCPCtx := tools.ResolveMCPContext(cfg, agentOverride)
 
 	hookRunner := hooks.NewHookRunner(cfg.Hooks)
 	loop := agent.NewAgentLoop(gateway, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
@@ -278,12 +255,11 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		loop.SetReasoningEffort(cfg.Agent.ReasoningEffort)
 	}
 	if agentOverride != nil {
-		loop.SetAgentOverride(agentOverride.Prompt, agentOverride.Memory)
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx)
+	} else if scopedMCPCtx != "" {
+		loop.SetMCPContext(scopedMCPCtx)
 	}
 	loop.SetEnableStreaming(true) // streaming enabled but deltas are suppressed — only final text rendered
-	if mcpCtx := mcp.BuildContext(cfg.MCPServers); mcpCtx != "" {
-		loop.SetMCPContext(mcpCtx)
-	}
 
 	settings := config.LoadSettings()
 

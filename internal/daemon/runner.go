@@ -12,7 +12,6 @@ import (
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
-	mcppkg "github.com/Kocoro-lab/shan/internal/mcp"
 	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/tools"
 )
@@ -131,7 +130,13 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	loop.SetContextWindow(cfg.Agent.ContextWindow)
 	loop.SetEnableStreaming(false)
 	if agentOverride != nil {
-		loop.SetAgentOverride(agentOverride.Prompt, agentOverride.Memory)
+		scopedMCPCtx := tools.ResolveMCPContext(cfg, agentOverride)
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx)
+	} else {
+		scopedMCPCtx := tools.ResolveMCPContext(cfg)
+		if scopedMCPCtx != "" {
+			loop.SetMCPContext(scopedMCPCtx)
+		}
 	}
 	if cfg.Agent.Model != "" {
 		loop.SetSpecificModel(cfg.Agent.Model)
@@ -145,9 +150,6 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	}
 	if cfg.Agent.ReasoningEffort != "" {
 		loop.SetReasoningEffort(cfg.Agent.ReasoningEffort)
-	}
-	if mcpCtx := mcppkg.BuildContext(cfg.MCPServers); mcpCtx != "" {
-		loop.SetMCPContext(mcpCtx)
 	}
 	loop.SetHandler(handler)
 

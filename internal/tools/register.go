@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/shan/internal/agents"
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/mcp"
@@ -92,15 +93,32 @@ func RegisterServerTools(ctx context.Context, gw *client.GatewayClient, reg *age
 
 // RegisterAll registers local tools, connects MCP servers, and then fetches
 // server-side tools from the gateway. Local tools take priority, then MCP, then gateway.
+// If agentDef is non-nil, tool filtering and MCP scoping are applied per-agent.
 // The returned cleanup function must be called on shutdown.
-func RegisterAll(gw *client.GatewayClient, cfg *config.Config) (*agent.ToolRegistry, func(), error) {
+func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agents.Agent) (*agent.ToolRegistry, func(), error) {
 	reg, baseCleanup := RegisterLocalTools(cfg)
+
+	// Apply agent tool filter (allow/deny list)
+	var toolFilter *agents.AgentToolsFilter
+	if len(agentDef) > 0 && agentDef[0] != nil && agentDef[0].Config != nil {
+		toolFilter = agentDef[0].Config.Tools
+	}
+	if toolFilter != nil {
+		if len(toolFilter.Allow) > 0 {
+			reg = reg.FilterByAllow(toolFilter.Allow)
+		} else if len(toolFilter.Deny) > 0 {
+			reg = reg.FilterByDeny(toolFilter.Deny)
+		}
+	}
+
+	// Resolve effective MCP servers (global vs agent-scoped)
+	mcpServers := resolveMCPServers(cfg, agentDef...)
 
 	// MCP server tools (best-effort)
 	var mcpMgr *mcp.ClientManager
-	if cfg != nil && len(cfg.MCPServers) > 0 {
+	if len(mcpServers) > 0 {
 		mcpMgr = mcp.NewClientManager()
-		mcpTools, mcpErr := mcpMgr.ConnectAll(context.Background(), cfg.MCPServers)
+		mcpTools, mcpErr := mcpMgr.ConnectAll(context.Background(), mcpServers)
 		if mcpErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: MCP servers: %v\n", mcpErr)
 		}
@@ -138,6 +156,53 @@ func RegisterAll(gw *client.GatewayClient, cfg *config.Config) (*agent.ToolRegis
 	}
 
 	return reg, cleanup, nil
+}
+
+// resolveMCPServers determines which MCP servers to connect based on agent config.
+// If the agent has no MCP config, returns the global set.
+// If _inherit is true, agent servers are merged on top of global.
+// If _inherit is false, only agent servers are used.
+func resolveMCPServers(cfg *config.Config, agentDef ...*agents.Agent) map[string]mcp.MCPServerConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	// No agent or no agent MCP config → use global
+	if len(agentDef) == 0 || agentDef[0] == nil || agentDef[0].Config == nil || agentDef[0].Config.MCPServers == nil {
+		return cfg.MCPServers
+	}
+
+	agentMCP := agentDef[0].Config.MCPServers
+	result := make(map[string]mcp.MCPServerConfig)
+
+	// If inherit, start with global servers
+	if agentMCP.Inherit {
+		for name, srv := range cfg.MCPServers {
+			result[name] = srv
+		}
+	}
+
+	// Overlay agent-specific servers
+	for name, ref := range agentMCP.Servers {
+		result[name] = mcp.MCPServerConfig{
+			Command:  ref.Command,
+			Args:     ref.Args,
+			Env:      ref.Env,
+			Type:     ref.Type,
+			URL:      ref.URL,
+			Disabled: ref.Disabled,
+			Context:  ref.Context,
+		}
+	}
+
+	return result
+}
+
+// ResolveMCPContext builds the MCP context string scoped to the agent's servers.
+// If the agent has no MCP config, falls back to global servers.
+func ResolveMCPContext(cfg *config.Config, agentDef ...*agents.Agent) string {
+	servers := resolveMCPServers(cfg, agentDef...)
+	return mcp.BuildContext(servers)
 }
 
 // RegisterCloudDelegate registers the cloud_delegate tool if cloud is enabled.
