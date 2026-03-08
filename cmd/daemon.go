@@ -160,12 +160,18 @@ var daemonStartCmd = &cobra.Command{
 		})
 
 		localServer := daemon.NewServer(7533, wsClient)
+		serverErrCh := make(chan error, 1)
 		go func() {
-			if err := localServer.Start(ctx); err != nil {
-				log.Printf("daemon: local server error: %v", err)
-			}
+			serverErrCh <- localServer.Start(ctx)
 		}()
-		log.Printf("daemon: local server listening on http://127.0.0.1:7533")
+		// Give the listener a moment to bind, then check for immediate failure.
+		time.Sleep(50 * time.Millisecond)
+		select {
+		case err := <-serverErrCh:
+			log.Printf("daemon: local server failed to start: %v (continuing without it)", err)
+		default:
+			log.Printf("daemon: local server listening on http://127.0.0.1:7533")
+		}
 
 		log.Printf("daemon: connecting to %s", wsEndpoint)
 		wsClient.RunWithReconnect(ctx)

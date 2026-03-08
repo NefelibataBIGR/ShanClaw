@@ -163,7 +163,10 @@ func (c *Client) Listen(ctx context.Context) error {
 			if ch, ok := c.pendingClaims.Load(sm.MessageID); ok {
 				var ack ClaimAckPayload
 				if err := json.Unmarshal(sm.Payload, &ack); err == nil {
-					ch.(chan bool) <- ack.Granted
+					select {
+					case ch.(chan bool) <- ack.Granted:
+					default:
+					}
 				}
 			}
 		case MsgTypeSystem:
