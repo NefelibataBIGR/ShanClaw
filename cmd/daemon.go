@@ -18,7 +18,6 @@ import (
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/daemon"
 	"github.com/Kocoro-lab/shan/internal/hooks"
-	mcppkg "github.com/Kocoro-lab/shan/internal/mcp"
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/spf13/cobra"
 )
@@ -75,90 +74,6 @@ var daemonStartCmd = &cobra.Command{
 			cancel()
 		}()
 
-		wsClient := daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
-			agentName := msg.AgentName
-			prompt := msg.Text
-			if agentName == "" {
-				agentName, prompt = agents.ParseAgentMention(msg.Text)
-			}
-			if prompt == "" {
-				prompt = msg.Text
-			}
-
-			var agentOverride *agents.Agent
-			if agentName != "" {
-				a, loadErr := agents.LoadAgent(agentsDir, agentName)
-				if loadErr != nil {
-					log.Printf("daemon: agent %q not found: %v, using default", agentName, loadErr)
-					agentName = ""
-					prompt = msg.Text
-				} else {
-					agentOverride = a
-				}
-			}
-
-			// Per-agent lock serializes concurrent messages to the same agent
-			sessionCache.Lock(agentName)
-			defer sessionCache.Unlock(agentName)
-
-			sessMgr := sessionCache.GetOrCreate(agentName)
-			sess := sessMgr.Current()
-			history := sess.Messages
-
-			loop := agent.NewAgentLoop(gw, reg, cfg.ModelTier, shanDir, cfg.Agent.MaxIterations,
-				cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
-			loop.SetMaxTokens(cfg.Agent.MaxTokens)
-			loop.SetTemperature(cfg.Agent.Temperature)
-			loop.SetContextWindow(cfg.Agent.ContextWindow)
-			loop.SetEnableStreaming(false)
-			if agentOverride != nil {
-				loop.SetAgentOverride(agentOverride.Prompt, agentOverride.Memory)
-			}
-			if cfg.Agent.Model != "" {
-				loop.SetSpecificModel(cfg.Agent.Model)
-			}
-			if cfg.Agent.Thinking {
-				if cfg.Agent.ThinkingMode == "enabled" {
-					loop.SetThinking(&client.ThinkingConfig{Type: "enabled", BudgetTokens: cfg.Agent.ThinkingBudget})
-				} else {
-					loop.SetThinking(&client.ThinkingConfig{Type: "adaptive"})
-				}
-			}
-			if cfg.Agent.ReasoningEffort != "" {
-				loop.SetReasoningEffort(cfg.Agent.ReasoningEffort)
-			}
-			if mcpCtx := mcppkg.BuildContext(cfg.MCPServers); mcpCtx != "" {
-				loop.SetMCPContext(mcpCtx)
-			}
-			dh := &daemonEventHandler{}
-			loop.SetHandler(dh)
-			// Wire handler to cloud_delegate tool so it can stream events
-			if ct, ok := reg.Get("cloud_delegate"); ok {
-				if cdt, ok := ct.(*tools.CloudDelegateTool); ok {
-					cdt.SetHandler(dh)
-				}
-			}
-
-			result, usage, runErr := loop.Run(ctx, prompt, history)
-			if runErr != nil {
-				log.Printf("daemon: agent error for %s: %v", agentName, runErr)
-				return fmt.Sprintf("Sorry, I encountered an error: %v", runErr)
-			}
-
-			sess.Messages = append(sess.Messages,
-				client.Message{Role: "user", Content: client.NewTextContent(prompt)},
-				client.Message{Role: "assistant", Content: client.NewTextContent(result)},
-			)
-			if err := sessMgr.Save(); err != nil {
-				log.Printf("daemon: failed to save session: %v", err)
-			}
-
-			log.Printf("daemon: reply to %s (%d tokens, $%.4f)", agentName, usage.TotalTokens, usage.CostUSD)
-			return result
-		}, func(text string) {
-			log.Printf("daemon: [system] %s", text)
-		})
-
 		deps := &daemon.ServerDeps{
 			Config:       cfg,
 			GW:           gw,
@@ -169,6 +84,34 @@ var daemonStartCmd = &cobra.Command{
 			HookRunner:   hookRunner,
 			SessionCache: sessionCache,
 		}
+
+		wsClient := daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
+			req := daemon.RunAgentRequest{
+				Text:  msg.Text,
+				Agent: msg.AgentName,
+			}
+			// Fall back to @mention parsing if cloud didn't set agent name.
+			if req.Agent == "" {
+				agentName, prompt := agents.ParseAgentMention(msg.Text)
+				req.Agent = agentName
+				req.Text = prompt
+			}
+			if req.Text == "" {
+				req.Text = msg.Text
+			}
+
+			result, err := daemon.RunAgent(ctx, deps, req, &daemonEventHandler{})
+			if err != nil {
+				log.Printf("daemon: agent error: %v", err)
+				return fmt.Sprintf("Sorry, I encountered an error: %v", err)
+			}
+
+			log.Printf("daemon: reply to %s (%d tokens, $%.4f)", result.Agent, result.Usage.TotalTokens, result.Usage.CostUSD)
+			return result.Reply
+		}, func(text string) {
+			log.Printf("daemon: [system] %s", text)
+		})
+
 		localServer := daemon.NewServer(7533, wsClient, deps)
 		serverErrCh := make(chan error, 1)
 		go func() {
@@ -216,16 +159,8 @@ func (h *daemonEventHandler) OnToolResult(name string, args string, result agent
 func (h *daemonEventHandler) OnText(text string)            {}
 func (h *daemonEventHandler) OnStreamDelta(delta string)    {}
 func (h *daemonEventHandler) OnUsage(usage agent.TurnUsage) {}
-// daemonDeniedTools are tools that should not be auto-approved in daemon mode.
-// Schedule mutation tools can create persistent system-level side effects.
-var daemonDeniedTools = map[string]bool{
-	"schedule_create": true,
-	"schedule_update": true,
-	"schedule_remove": true,
-}
-
 func (h *daemonEventHandler) OnApprovalNeeded(tool string, args string) bool {
-	if daemonDeniedTools[tool] {
+	if daemon.DaemonDeniedTools[tool] {
 		log.Printf("daemon: denied %s (schedule mutation not auto-approved in daemon mode)", tool)
 		return false
 	}
