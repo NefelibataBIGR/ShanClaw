@@ -324,6 +324,11 @@ func mustJSON(v interface{}) string {
 	return string(b)
 }
 
+// isJSONNull checks if a json.RawMessage represents a JSON null value.
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -344,9 +349,14 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	agentDir := filepath.Join(s.deps.AgentsDir, name)
+	if _, err := os.Stat(filepath.Join(agentDir, "AGENT.md")); os.IsNotExist(err) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("agent not found: %s", name))
+		return
+	}
 	a, err := agents.LoadAgent(s.deps.AgentsDir, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("agent not found: %s", name))
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load agent %s: %v", name, err))
 		return
 	}
 	writeJSON(w, http.StatusOK, a.ToAPI())
@@ -372,16 +382,28 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Memory != nil {
-		agents.WriteAgentMemory(s.deps.AgentsDir, req.Name, *req.Memory)
+		if err := agents.WriteAgentMemory(s.deps.AgentsDir, req.Name, *req.Memory); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write memory: %v", err))
+			return
+		}
 	}
 	if req.Config != nil {
-		agents.WriteAgentConfig(s.deps.AgentsDir, req.Name, req.Config)
+		if err := agents.WriteAgentConfig(s.deps.AgentsDir, req.Name, req.Config); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write config: %v", err))
+			return
+		}
 	}
 	for name, content := range req.Commands {
-		agents.WriteAgentCommand(s.deps.AgentsDir, req.Name, name, content)
+		if err := agents.WriteAgentCommand(s.deps.AgentsDir, req.Name, name, content); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write command %s: %v", name, err))
+			return
+		}
 	}
 	for _, skill := range req.Skills {
-		agents.WriteAgentSkill(s.deps.AgentsDir, req.Name, skill)
+		if err := agents.WriteAgentSkill(s.deps.AgentsDir, req.Name, skill); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write skill %s: %v", skill.Name, err))
+			return
+		}
 	}
 	a, err := agents.LoadAgent(s.deps.AgentsDir, req.Name)
 	if err != nil {
@@ -418,28 +440,38 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Memory != nil {
-		if string(req.Memory) == "null" {
+		if isJSONNull(req.Memory) {
 			os.Remove(filepath.Join(agentDir, "MEMORY.md"))
 		} else {
 			var mem string
-			if err := json.Unmarshal(req.Memory, &mem); err == nil {
-				agents.WriteAgentMemory(s.deps.AgentsDir, name, mem)
+			if err := json.Unmarshal(req.Memory, &mem); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid memory value: %v", err))
+				return
+			}
+			if err := agents.WriteAgentMemory(s.deps.AgentsDir, name, mem); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
 		}
 	}
 	if req.Config != nil {
-		if string(req.Config) == "null" {
+		if isJSONNull(req.Config) {
 			os.Remove(filepath.Join(agentDir, "config.yaml"))
 		} else {
 			var cfg agents.AgentConfigAPI
-			if err := json.Unmarshal(req.Config, &cfg); err == nil {
-				if cfg.Tools != nil {
-					if err := agents.ValidateToolsFilter(cfg.Tools); err != nil {
-						writeError(w, http.StatusBadRequest, err.Error())
-						return
-					}
+			if err := json.Unmarshal(req.Config, &cfg); err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid config value: %v", err))
+				return
+			}
+			if cfg.Tools != nil {
+				if err := agents.ValidateToolsFilter(cfg.Tools); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
 				}
-				agents.WriteAgentConfig(s.deps.AgentsDir, name, &cfg)
+			}
+			if err := agents.WriteAgentConfig(s.deps.AgentsDir, name, &cfg); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
 		}
 	}
@@ -448,14 +480,20 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		agents.WriteAgentCommand(s.deps.AgentsDir, name, cmdName, content)
+		if err := agents.WriteAgentCommand(s.deps.AgentsDir, name, cmdName, content); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write command %s: %v", cmdName, err))
+			return
+		}
 	}
 	for _, skill := range req.Skills {
 		if err := agents.ValidateCommandName(skill.Name); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		agents.WriteAgentSkill(s.deps.AgentsDir, name, skill)
+		if err := agents.WriteAgentSkill(s.deps.AgentsDir, name, skill); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write skill %s: %v", skill.Name, err))
+			return
+		}
 	}
 	a, err := agents.LoadAgent(s.deps.AgentsDir, name)
 	if err != nil {
@@ -555,6 +593,10 @@ func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := agents.ValidateCommandName(cmdName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := agents.DeleteAgentCommand(s.deps.AgentsDir, agentName, cmdName); err != nil && !os.IsNotExist(err) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -598,6 +640,10 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	agentName := r.PathValue("name")
 	skillName := r.PathValue("skill")
 	if err := agents.ValidateAgentName(agentName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := agents.ValidateCommandName(skillName); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
