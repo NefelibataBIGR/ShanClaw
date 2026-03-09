@@ -262,6 +262,11 @@ func (a *AgentLoop) SetContextWindow(tokens int) {
 	a.contextWindow = tokens
 }
 
+// SetMaxIterations overrides the maximum number of agent loop iterations.
+func (a *AgentLoop) SetMaxIterations(n int) {
+	a.maxIter = n
+}
+
 // SetAgentOverride sets only the prompt and memory for an agent.
 // Deprecated: Use SwitchAgent for full per-agent scoping.
 func (a *AgentLoop) SetAgentOverride(basePrompt, memory string) {

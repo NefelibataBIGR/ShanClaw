@@ -175,6 +175,25 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	if cfg.Agent.ReasoningEffort != "" {
 		loop.SetReasoningEffort(cfg.Agent.ReasoningEffort)
 	}
+	// Per-agent model config overrides
+	if agentOverride != nil && agentOverride.Config != nil && agentOverride.Config.Agent != nil {
+		ac := agentOverride.Config.Agent
+		if ac.Model != nil {
+			loop.SetSpecificModel(*ac.Model)
+		}
+		if ac.MaxIterations != nil {
+			loop.SetMaxIterations(*ac.MaxIterations)
+		}
+		if ac.Temperature != nil {
+			loop.SetTemperature(*ac.Temperature)
+		}
+		if ac.MaxTokens != nil {
+			loop.SetMaxTokens(*ac.MaxTokens)
+		}
+		if ac.ContextWindow != nil {
+			loop.SetContextWindow(*ac.ContextWindow)
+		}
+	}
 	loop.SetHandler(&cliEventHandler{autoApprove: autoApprove})
 	loop.SetBypassPermissions(dangerouslySkipPermissions)
 	if agentOverride != nil {
