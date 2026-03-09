@@ -853,7 +853,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	sess := m.sessions.Current()
 	// Set title from first user message
 	if sess.Title == "New session" {
-		sess.Title = sessionTitle(input)
+		sess.Title = session.Title(input)
 	}
 	sess.Messages = append(sess.Messages, client.Message{Role: "user", Content: client.NewTextContent(input)})
 
@@ -1243,7 +1243,7 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 	// Set title from query if still default
 	sess := m.sessions.Current()
 	if sess.Title == "New session" {
-		sess.Title = sessionTitle(query)
+		sess.Title = session.Title(query)
 	}
 	return func() tea.Msg {
 		taskReq := client.TaskRequest{
@@ -1292,7 +1292,7 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 						title := strings.TrimSpace(event.Response)
 						title = strings.Trim(title, "\"'`")
 						if title != "" {
-							m.sessions.Current().Title = sessionTitle(title)
+							m.sessions.Current().Title = session.Title(title)
 						}
 					}
 					break
@@ -1548,30 +1548,6 @@ func copyToClipboard(text string) tea.Cmd {
 		err := cmd.Run()
 		return clipboardResultMsg{err: err, len: len(text)}
 	}
-}
-
-// sessionTitle creates a short, readable title from user input.
-// Truncates to 50 chars at a word boundary, strips leading/trailing whitespace
-// and newlines, and ensures single-line output.
-func sessionTitle(input string) string {
-	// Take first line only
-	if idx := strings.IndexAny(input, "\n\r"); idx >= 0 {
-		input = input[:idx]
-	}
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return "New session"
-	}
-	const maxLen = 50
-	if len(input) <= maxLen {
-		return input
-	}
-	// Truncate at word boundary
-	truncated := input[:maxLen]
-	if lastSpace := strings.LastIndex(truncated, " "); lastSpace > maxLen/2 {
-		truncated = truncated[:lastSpace]
-	}
-	return truncated + "..."
 }
 
 var allSlashCommands = []slashCmd{

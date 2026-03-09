@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
+	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/tools"
 )
 
@@ -215,6 +216,15 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	result, usage, runErr := loop.Run(ctx, prompt, history)
 	if runErr != nil {
 		return nil, fmt.Errorf("agent error for %s: %w", agentName, runErr)
+	}
+
+	// Set title from first user message (named agents get a fixed title).
+	if sess.Title == "New session" {
+		if agentName != "" {
+			sess.Title = session.AgentTitle(agentName)
+		} else {
+			sess.Title = session.Title(prompt)
+		}
 	}
 
 	// Append the turn to the session and persist.

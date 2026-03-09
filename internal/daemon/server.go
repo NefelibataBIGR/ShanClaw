@@ -185,10 +185,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	if summaries == nil {
-		summaries = []session.SessionSummary{}
+	// Filter out empty sessions (created but never used).
+	filtered := make([]session.SessionSummary, 0, len(summaries))
+	for _, s := range summaries {
+		if s.MsgCount > 0 {
+			filtered = append(filtered, s)
+		}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": summaries})
+	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": filtered})
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
