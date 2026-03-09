@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -264,8 +265,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req RunAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+	if !decodeBody(w, r, &req) {
 		return
 	}
 	if err := req.Validate(); err != nil {
@@ -384,6 +384,45 @@ func isJSONNull(raw json.RawMessage) bool {
 	return strings.TrimSpace(string(raw)) == "null"
 }
 
+const maxBodySize = 1 << 20 // 1 MB
+
+// decodeBody reads a JSON request body with a size limit. Returns false and
+// writes an error response if decoding fails.
+func decodeBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+		}
+		return false
+	}
+	return true
+}
+
+// deepMerge merges src into dst recursively (RFC 7386 JSON Merge Patch).
+// null values delete keys, nested maps merge, scalars replace.
+func deepMerge(dst, src map[string]interface{}) {
+	for key, srcVal := range src {
+		if srcVal == nil {
+			delete(dst, key)
+			continue
+		}
+		srcMap, srcIsMap := srcVal.(map[string]interface{})
+		if srcIsMap {
+			if dstVal, ok := dst[key]; ok {
+				if dstMap, dstIsMap := dstVal.(map[string]interface{}); dstIsMap {
+					deepMerge(dstMap, srcMap)
+					continue
+				}
+			}
+		}
+		dst[key] = srcVal
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -419,8 +458,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var req agents.AgentCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 	if err := req.Validate(); err != nil {
@@ -439,6 +477,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	// Write all agent files — rollback on any failure.
 	rollback := func() { agents.DeleteAgentDir(s.deps.AgentsDir, req.Name) }
 	if err := agents.WriteAgentPrompt(s.deps.AgentsDir, req.Name, req.Prompt); err != nil {
+		rollback()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -477,6 +516,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	a, err := agents.LoadAgent(s.deps.AgentsDir, req.Name)
 	if err != nil {
+		rollback()
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -495,8 +535,7 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req agents.AgentUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &req) {
 		return
 	}
 
@@ -655,8 +694,7 @@ func (s *Server) handlePutAgentConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg agents.AgentConfigAPI
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &cfg) {
 		return
 	}
 	if cfg.Tools != nil {
@@ -706,7 +744,10 @@ func (s *Server) handlePutCommand(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.Content == "" {
 		writeError(w, http.StatusBadRequest, "content is required")
 		return
 	}
@@ -753,8 +794,7 @@ func (s *Server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var skill skills.Skill
-	if err := json.NewDecoder(r.Body).Decode(&skill); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &skill) {
 		return
 	}
 	skill.Name = skillName // URL takes precedence
@@ -832,8 +872,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 	var patch map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &patch) {
 		return
 	}
 
@@ -850,13 +889,7 @@ func (s *Server) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 		current = make(map[string]interface{})
 	}
 
-	for key, val := range patch {
-		if val == nil {
-			delete(current, key)
-		} else {
-			current[key] = val
-		}
-	}
+	deepMerge(current, patch)
 
 	data, err := yaml.Marshal(current)
 	if err != nil {
@@ -948,8 +981,7 @@ func (s *Server) handlePutInstructions(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content *string `json:"content"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeBody(w, r, &body) {
 		return
 	}
 	path := filepath.Join(s.deps.ShannonDir, "instructions.md")

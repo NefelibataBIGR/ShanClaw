@@ -1,16 +1,20 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Kocoro-lab/shan/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestServer_Health(t *testing.T) {
@@ -211,5 +215,352 @@ func TestServer_Message_AgentNotFound(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "error") {
 		t.Errorf("expected error in body, got %s", string(body))
+	}
+}
+
+// --- Issue 1: rollback on create failure ---
+
+func TestServer_CreateAgent_Conflict(t *testing.T) {
+	agentsDir := t.TempDir()
+	sessDir := t.TempDir()
+	deps := &ServerDeps{
+		AgentsDir:    agentsDir,
+		ShannonDir:   t.TempDir(),
+		SessionCache: NewSessionCache(sessDir),
+	}
+	c := NewClient("ws://localhost:1/x", "", func(msg MessagePayload) string { return "" }, nil)
+	srv := NewServer(0, c, deps, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	body := `{"name":"testbot","prompt":"hello world"}`
+	resp, err := http.Post(
+		fmt.Sprintf("http://127.0.0.1:%d/agents", srv.Port()),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", resp.StatusCode)
+	}
+
+	// Duplicate create — should get 409
+	resp2, err := http.Post(
+		fmt.Sprintf("http://127.0.0.1:%d/agents", srv.Port()),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate: expected 409, got %d", resp2.StatusCode)
+	}
+}
+
+func TestServer_CreateAgent_RollbackOnWriteFailure(t *testing.T) {
+	agentsDir := t.TempDir()
+	sessDir := t.TempDir()
+	deps := &ServerDeps{
+		AgentsDir:    agentsDir,
+		ShannonDir:   t.TempDir(),
+		SessionCache: NewSessionCache(sessDir),
+	}
+	c := NewClient("ws://localhost:1/x", "", func(msg MessagePayload) string { return "" }, nil)
+	srv := NewServer(0, c, deps, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// Make agents dir read-only so WriteAgentPrompt's MkdirAll fails
+	os.Chmod(agentsDir, 0500)
+	defer os.Chmod(agentsDir, 0700) // restore for cleanup
+
+	body := `{"name":"failbot","prompt":"should fail"}`
+	resp, err := http.Post(
+		fmt.Sprintf("http://127.0.0.1:%d/agents", srv.Port()),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", resp.StatusCode)
+	}
+
+	// Restore permissions and verify no orphaned directory
+	os.Chmod(agentsDir, 0700)
+	if _, err := os.Stat(filepath.Join(agentsDir, "failbot")); !os.IsNotExist(err) {
+		t.Error("agent dir should not exist after rollback")
+	}
+}
+
+// --- deepMerge unit tests ---
+
+func TestDeepMerge(t *testing.T) {
+	tests := []struct {
+		name     string
+		dst, src map[string]interface{}
+		want     map[string]interface{}
+	}{
+		{
+			name: "scalar replace",
+			dst:  map[string]interface{}{"a": "old"},
+			src:  map[string]interface{}{"a": "new"},
+			want: map[string]interface{}{"a": "new"},
+		},
+		{
+			name: "null deletes key",
+			dst:  map[string]interface{}{"a": "val", "b": "keep"},
+			src:  map[string]interface{}{"a": nil},
+			want: map[string]interface{}{"b": "keep"},
+		},
+		{
+			name: "nested merge preserves siblings",
+			dst: map[string]interface{}{
+				"agent": map[string]interface{}{"model": "old", "temp": 0.7},
+			},
+			src: map[string]interface{}{
+				"agent": map[string]interface{}{"model": "new"},
+			},
+			want: map[string]interface{}{
+				"agent": map[string]interface{}{"model": "new", "temp": 0.7},
+			},
+		},
+		{
+			name: "3-level deep merge",
+			dst: map[string]interface{}{
+				"a": map[string]interface{}{
+					"b": map[string]interface{}{"c": 1, "d": 2},
+				},
+			},
+			src: map[string]interface{}{
+				"a": map[string]interface{}{
+					"b": map[string]interface{}{"c": 99},
+				},
+			},
+			want: map[string]interface{}{
+				"a": map[string]interface{}{
+					"b": map[string]interface{}{"c": 99, "d": 2},
+				},
+			},
+		},
+		{
+			name: "src map replaces dst scalar",
+			dst:  map[string]interface{}{"a": "scalar"},
+			src:  map[string]interface{}{"a": map[string]interface{}{"nested": true}},
+			want: map[string]interface{}{"a": map[string]interface{}{"nested": true}},
+		},
+		{
+			name: "src scalar replaces dst map",
+			dst:  map[string]interface{}{"a": map[string]interface{}{"nested": true}},
+			src:  map[string]interface{}{"a": "scalar"},
+			want: map[string]interface{}{"a": "scalar"},
+		},
+		{
+			name: "new key added",
+			dst:  map[string]interface{}{"a": 1},
+			src:  map[string]interface{}{"b": 2},
+			want: map[string]interface{}{"a": 1, "b": 2},
+		},
+		{
+			name: "empty src is no-op",
+			dst:  map[string]interface{}{"a": 1},
+			src:  map[string]interface{}{},
+			want: map[string]interface{}{"a": 1},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			deepMerge(tc.dst, tc.src)
+			gotJSON, _ := json.Marshal(tc.dst)
+			wantJSON, _ := json.Marshal(tc.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("got %s, want %s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
+// --- Issue 2: PATCH config deep merge ---
+
+func TestServer_PatchConfig_DeepMerge(t *testing.T) {
+	shannonDir := t.TempDir()
+	sessDir := t.TempDir()
+	deps := &ServerDeps{
+		ShannonDir:   shannonDir,
+		SessionCache: NewSessionCache(sessDir),
+		Config:       &config.Config{},
+	}
+	c := NewClient("ws://localhost:1/x", "", func(msg MessagePayload) string { return "" }, nil)
+	srv := NewServer(0, c, deps, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+
+	// Step 1: Set initial config with nested agent block
+	initial := map[string]interface{}{
+		"agent": map[string]interface{}{
+			"model":          "claude-3-5-sonnet",
+			"max_iterations": 10,
+			"temperature":    0.7,
+		},
+		"top_level_key": "keep_me",
+	}
+	initialYAML, _ := yaml.Marshal(initial)
+	os.WriteFile(filepath.Join(shannonDir, "config.yaml"), initialYAML, 0600)
+
+	// Step 2: PATCH only agent.model — should preserve max_iterations and temperature
+	patch := `{"agent": {"model": "claude-4-opus"}}`
+	req, _ := http.NewRequest("PATCH", base+"/config", strings.NewReader(patch))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH: expected 200, got %d", resp.StatusCode)
+	}
+
+	// Step 3: Read config back and verify deep merge
+	data, err := os.ReadFile(filepath.Join(shannonDir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]interface{}
+	if err := yaml.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	agentBlock, ok := result["agent"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("agent block not a map: %T", result["agent"])
+	}
+
+	// model should be updated
+	if agentBlock["model"] != "claude-4-opus" {
+		t.Errorf("model = %v, want claude-4-opus", agentBlock["model"])
+	}
+
+	// max_iterations and temperature should be preserved (deep merge)
+	if agentBlock["max_iterations"] == nil {
+		t.Error("max_iterations was lost during PATCH — shallow merge instead of deep merge")
+	}
+	if agentBlock["temperature"] == nil {
+		t.Error("temperature was lost during PATCH — shallow merge instead of deep merge")
+	}
+
+	// top_level_key should still be there
+	if result["top_level_key"] != "keep_me" {
+		t.Errorf("top_level_key = %v, want keep_me", result["top_level_key"])
+	}
+}
+
+func TestServer_PatchConfig_NullDeletes(t *testing.T) {
+	shannonDir := t.TempDir()
+	sessDir := t.TempDir()
+	deps := &ServerDeps{
+		ShannonDir:   shannonDir,
+		SessionCache: NewSessionCache(sessDir),
+		Config:       &config.Config{},
+	}
+	c := NewClient("ws://localhost:1/x", "", func(msg MessagePayload) string { return "" }, nil)
+	srv := NewServer(0, c, deps, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+
+	// Set initial config
+	initial := map[string]interface{}{
+		"agent":    map[string]interface{}{"model": "gpt-4"},
+		"to_delete": "bye",
+	}
+	initialYAML, _ := yaml.Marshal(initial)
+	os.WriteFile(filepath.Join(shannonDir, "config.yaml"), initialYAML, 0600)
+
+	// PATCH with null to delete a key
+	patch := `{"to_delete": null}`
+	req, _ := http.NewRequest("PATCH", base+"/config", strings.NewReader(patch))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PATCH: expected 200, got %d", resp.StatusCode)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(shannonDir, "config.yaml"))
+	var result map[string]interface{}
+	yaml.Unmarshal(data, &result)
+
+	if _, exists := result["to_delete"]; exists {
+		t.Error("to_delete should have been removed by null patch")
+	}
+	if result["agent"] == nil {
+		t.Error("agent block should still exist")
+	}
+}
+
+// --- Issue 3: request body size limit ---
+
+func TestServer_BodySizeLimit(t *testing.T) {
+	agentsDir := t.TempDir()
+	sessDir := t.TempDir()
+	deps := &ServerDeps{
+		AgentsDir:    agentsDir,
+		ShannonDir:   t.TempDir(),
+		SessionCache: NewSessionCache(sessDir),
+		Config:       &config.Config{},
+	}
+	c := NewClient("ws://localhost:1/x", "", func(msg MessagePayload) string { return "" }, nil)
+	srv := NewServer(0, c, deps, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", srv.Port())
+
+	// Send a 2MB body to POST /agents — should be rejected
+	bigBody := bytes.Repeat([]byte("x"), 2*1024*1024)
+	payload := append([]byte(`{"name":"big","prompt":"`), bigBody...)
+	payload = append(payload, '"', '}')
+
+	resp, err := http.Post(base+"/agents", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Should get 413 or 400 (body too large), not 201
+	if resp.StatusCode == http.StatusCreated {
+		t.Error("expected rejection for 2MB body, got 201 Created")
+	}
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Logf("status = %d (acceptable if 400, ideal is 413)", resp.StatusCode)
 	}
 }
