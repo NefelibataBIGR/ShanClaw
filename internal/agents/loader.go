@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Kocoro-lab/shan/internal/skills"
 )
 
 var agentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -69,6 +71,7 @@ type Agent struct {
 	Memory   string
 	Config   *AgentConfig      // nil = inherit everything (backwards-compatible)
 	Commands map[string]string // agent-scoped slash commands (name → content)
+	Skills   []*skills.Skill   // agent-scoped skills (prompt, tool_chain, sub_agent)
 }
 
 func ValidateAgentName(name string) error {
@@ -105,6 +108,13 @@ func LoadAgent(agentsDir, name string) (*Agent, error) {
 
 	// Load agent-scoped commands (optional)
 	ag.Commands = loadAgentCommands(filepath.Join(dir, "commands"))
+
+	// Load agent-scoped skills (optional)
+	loadedSkills, err := skills.LoadSkills(dir, name)
+	if err != nil {
+		return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
+	}
+	ag.Skills = loadedSkills
 
 	return ag, nil
 }
