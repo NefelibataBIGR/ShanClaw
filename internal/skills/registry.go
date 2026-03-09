@@ -13,7 +13,6 @@ const (
 type Skill struct {
 	Name        string    `yaml:"name"`
 	Description string    `yaml:"description"`
-	Trigger     string    `yaml:"trigger,omitempty"` // regex pattern for auto-trigger (future use)
 	Type        SkillType `yaml:"type"`
 
 	// For SkillTypePrompt

@@ -14,7 +14,6 @@ func TestLoadSkills_Basic(t *testing.T) {
 	yaml := `name: review-pr
 description: Review a pull request
 type: prompt
-trigger: "review PR #(\\d+)"
 prompt: |
   Review the PR carefully.
 `
@@ -37,9 +36,6 @@ prompt: |
 	}
 	if s.Source != "review-agent" {
 		t.Errorf("source = %q", s.Source)
-	}
-	if s.Trigger != `review PR #(\d+)` {
-		t.Errorf("trigger = %q", s.Trigger)
 	}
 	if s.Prompt == "" {
 		t.Error("prompt should not be empty")
