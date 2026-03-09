@@ -437,11 +437,59 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Prompt != nil {
-		if *req.Prompt == "" {
-			writeError(w, http.StatusBadRequest, "prompt cannot be empty")
+
+	// --- Pre-validate all fields before any mutations ---
+	if req.Prompt != nil && *req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt cannot be empty")
+		return
+	}
+	var parsedMemory *string
+	if req.Memory != nil && !isJSONNull(req.Memory) {
+		var mem string
+		if err := json.Unmarshal(req.Memory, &mem); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid memory value: %v", err))
 			return
 		}
+		parsedMemory = &mem
+	}
+	var parsedConfig *agents.AgentConfigAPI
+	if req.Config != nil && !isJSONNull(req.Config) {
+		var cfg agents.AgentConfigAPI
+		if err := json.Unmarshal(req.Config, &cfg); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid config value: %v", err))
+			return
+		}
+		if cfg.Tools != nil {
+			if err := agents.ValidateToolsFilter(cfg.Tools); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		parsedConfig = &cfg
+	}
+	for cmdName := range req.Commands {
+		if err := agents.ValidateCommandName(cmdName); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	for _, skill := range req.Skills {
+		if err := agents.ValidateCommandName(skill.Name); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if skill.Type != skills.SkillTypePrompt {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported skill type %q", skill.Type))
+			return
+		}
+		if skill.Prompt == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("skill %q requires a prompt", skill.Name))
+			return
+		}
+	}
+
+	// --- Apply mutations (all inputs validated) ---
+	if req.Prompt != nil {
 		if err := agents.WriteAgentPrompt(s.deps.AgentsDir, name, *req.Prompt); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -451,12 +499,7 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if isJSONNull(req.Memory) {
 			os.Remove(filepath.Join(agentDir, "MEMORY.md"))
 		} else {
-			var mem string
-			if err := json.Unmarshal(req.Memory, &mem); err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid memory value: %v", err))
-				return
-			}
-			if err := agents.WriteAgentMemory(s.deps.AgentsDir, name, mem); err != nil {
+			if err := agents.WriteAgentMemory(s.deps.AgentsDir, name, *parsedMemory); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -466,38 +509,19 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if isJSONNull(req.Config) {
 			os.Remove(filepath.Join(agentDir, "config.yaml"))
 		} else {
-			var cfg agents.AgentConfigAPI
-			if err := json.Unmarshal(req.Config, &cfg); err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid config value: %v", err))
-				return
-			}
-			if cfg.Tools != nil {
-				if err := agents.ValidateToolsFilter(cfg.Tools); err != nil {
-					writeError(w, http.StatusBadRequest, err.Error())
-					return
-				}
-			}
-			if err := agents.WriteAgentConfig(s.deps.AgentsDir, name, &cfg); err != nil {
+			if err := agents.WriteAgentConfig(s.deps.AgentsDir, name, parsedConfig); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
 		}
 	}
 	for cmdName, content := range req.Commands {
-		if err := agents.ValidateCommandName(cmdName); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		if err := agents.WriteAgentCommand(s.deps.AgentsDir, name, cmdName, content); err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write command %s: %v", cmdName, err))
 			return
 		}
 	}
 	for _, skill := range req.Skills {
-		if err := agents.ValidateCommandName(skill.Name); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		if err := agents.WriteAgentSkill(s.deps.AgentsDir, name, skill); err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write skill %s: %v", skill.Name, err))
 			return
@@ -534,10 +558,24 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 
 // --- Agent sub-resource handlers ---
 
+// agentExists checks that the agent directory has AGENT.md. Returns false
+// and writes a 404 error if the agent does not exist.
+func (s *Server) agentExists(w http.ResponseWriter, name string) bool {
+	agentDir := filepath.Join(s.deps.AgentsDir, name)
+	if _, err := os.Stat(filepath.Join(agentDir, "AGENT.md")); os.IsNotExist(err) {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("agent %q not found", name))
+		return false
+	}
+	return true
+}
+
 func (s *Server) handlePutAgentConfig(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := agents.ValidateAgentName(name); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.agentExists(w, name) {
 		return
 	}
 	var cfg agents.AgentConfigAPI
@@ -564,8 +602,14 @@ func (s *Server) handleDeleteAgentConfig(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !s.agentExists(w, name) {
+		return
+	}
 	path := filepath.Join(s.deps.AgentsDir, name, "config.yaml")
-	os.Remove(path)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -574,6 +618,9 @@ func (s *Server) handlePutCommand(w http.ResponseWriter, r *http.Request) {
 	cmdName := r.PathValue("cmd")
 	if err := agents.ValidateAgentName(agentName); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.agentExists(w, agentName) {
 		return
 	}
 	if err := agents.ValidateCommandName(cmdName); err != nil {
@@ -601,6 +648,9 @@ func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !s.agentExists(w, agentName) {
+		return
+	}
 	if err := agents.ValidateCommandName(cmdName); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -617,6 +667,9 @@ func (s *Server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
 	skillName := r.PathValue("skill")
 	if err := agents.ValidateAgentName(agentName); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.agentExists(w, agentName) {
 		return
 	}
 	if err := agents.ValidateCommandName(skillName); err != nil {
@@ -649,6 +702,9 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	skillName := r.PathValue("skill")
 	if err := agents.ValidateAgentName(agentName); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.agentExists(w, agentName) {
 		return
 	}
 	if err := agents.ValidateCommandName(skillName); err != nil {
@@ -691,7 +747,8 @@ func (s *Server) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 	globalPath := filepath.Join(s.deps.ShannonDir, "config.yaml")
 	globalData, _ := os.ReadFile(globalPath)
 	var current map[string]interface{}
-	if err := yaml.Unmarshal(globalData, &current); err != nil {
+	yaml.Unmarshal(globalData, &current)
+	if current == nil {
 		current = make(map[string]interface{})
 	}
 
