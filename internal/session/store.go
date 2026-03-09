@@ -30,12 +30,22 @@ type SessionSummary struct {
 }
 
 type Store struct {
-	dir string
+	dir   string
+	index *Index // nil = index unavailable (graceful degradation)
 }
 
 func NewStore(dir string) *Store {
 	os.MkdirAll(dir, 0700)
-	return &Store{dir: dir}
+	s := &Store{dir: dir}
+	idx, err := OpenIndex(dir)
+	if err == nil {
+		s.index = idx
+		// First-launch migration: if index is empty but JSON files exist, rebuild
+		if empty, _ := idx.IsEmpty(); empty {
+			idx.Rebuild(s) // best-effort
+		}
+	}
+	return s
 }
 
 func (s *Store) Save(sess *Session) error {
@@ -50,7 +60,14 @@ func (s *Store) Save(sess *Session) error {
 	}
 
 	path := filepath.Join(s.dir, sess.ID+".json")
-	return os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return err
+	}
+
+	if s.index != nil {
+		s.index.UpsertSession(sess) // best-effort, don't fail save on index error
+	}
+	return nil
 }
 
 func (s *Store) Load(id string) (*Session, error) {
@@ -68,6 +85,13 @@ func (s *Store) Load(id string) (*Session, error) {
 }
 
 func (s *Store) List() ([]SessionSummary, error) {
+	if s.index != nil {
+		if summaries, err := s.index.ListSessions(); err == nil {
+			return summaries, nil
+		}
+		// Fall through to JSON scan on index error
+	}
+
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, err
@@ -99,7 +123,35 @@ func (s *Store) List() ([]SessionSummary, error) {
 
 func (s *Store) Delete(id string) error {
 	path := filepath.Join(s.dir, id+".json")
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+
+	if s.index != nil {
+		s.index.DeleteSession(id) // best-effort
+	}
+	return nil
+}
+
+func (s *Store) Search(query string, limit int) ([]SearchResult, error) {
+	if s.index == nil {
+		return nil, fmt.Errorf("search index not available")
+	}
+	return s.index.Search(query, limit)
+}
+
+func (s *Store) Close() error {
+	if s.index != nil {
+		return s.index.Close()
+	}
+	return nil
+}
+
+func (s *Store) RebuildIndex() error {
+	if s.index == nil {
+		return fmt.Errorf("search index not available")
+	}
+	return s.index.Rebuild(s)
 }
 
 func fileExists(path string) bool {

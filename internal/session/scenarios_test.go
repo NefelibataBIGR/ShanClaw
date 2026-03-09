@@ -3,11 +3,22 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Kocoro-lab/shan/internal/client"
 )
+
+func countJSON(entries []os.DirEntry) int {
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			n++
+		}
+	}
+	return n
+}
 
 // These tests validate every session storage scenario:
 //
@@ -96,8 +107,9 @@ func TestScenario_DaemonDefaultAgent_UsesGlobalSessionsDir(t *testing.T) {
 
 	// Verify file exists in the right directory
 	files, _ := os.ReadDir(sessDir)
-	if len(files) != 1 {
-		t.Errorf("expected 1 session file in %s, got %d", sessDir, len(files))
+	jsonCount := countJSON(files)
+	if jsonCount != 1 {
+		t.Errorf("expected 1 session file in %s, got %d", sessDir, jsonCount)
 	}
 
 	// Resume should find it
@@ -134,8 +146,9 @@ func TestScenario_OneShotCreatesNewSession(t *testing.T) {
 
 	// Should have 2 separate session files
 	files, _ := os.ReadDir(sessDir)
-	if len(files) != 2 {
-		t.Errorf("expected 2 session files for 2 one-shot runs, got %d", len(files))
+	jsonCount := countJSON(files)
+	if jsonCount != 2 {
+		t.Errorf("expected 2 session files for 2 one-shot runs, got %d", jsonCount)
 	}
 
 	// ResumeLatest picks the most recent one (PR #456)
@@ -213,8 +226,9 @@ func TestScenario_DaemonAndOneShotSameAgent_NoConflict(t *testing.T) {
 
 	// Two session files
 	files, _ := os.ReadDir(sessDir)
-	if len(files) != 2 {
-		t.Errorf("expected 2 session files, got %d", len(files))
+	jsonCount := countJSON(files)
+	if jsonCount != 2 {
+		t.Errorf("expected 2 session files, got %d", jsonCount)
 	}
 
 	time.Sleep(10 * time.Millisecond)
