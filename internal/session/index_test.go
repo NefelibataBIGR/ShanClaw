@@ -444,6 +444,41 @@ func TestIndex_LatestUpdated(t *testing.T) {
 	}
 }
 
+func TestIndex_SearchFTSSyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := OpenIndex(dir)
+	if err != nil {
+		t.Fatalf("OpenIndex: %v", err)
+	}
+	defer idx.Close()
+
+	// Insert data so FTS actually runs the query
+	idx.UpsertSession(&Session{
+		ID: "data", Title: "Data", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("some data")},
+		},
+	})
+
+	// Various malformed queries
+	badQueries := []string{
+		`"unbalanced`,
+		`AND`,
+		`OR OR`,
+		`NOT`,
+	}
+	for _, q := range badQueries {
+		_, err := idx.Search(q, 10)
+		if err == nil {
+			continue // some "bad" queries may be valid in FTS5, that's OK
+		}
+		// If it errors, the message should be clean (not raw sqlite)
+		if !strings.Contains(err.Error(), "invalid search query") {
+			t.Errorf("query %q: expected clean error, got: %v", q, err)
+		}
+	}
+}
+
 func TestIndex_IsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := OpenIndex(dir)

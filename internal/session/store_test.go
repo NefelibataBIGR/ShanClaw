@@ -133,6 +133,113 @@ func TestStore_SaveLoadWithImageContent(t *testing.T) {
 	}
 }
 
+func TestStore_SearchIntegration(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir) // auto-creates index + rebuilds (nothing to rebuild)
+	defer store.Close()
+
+	sess := &Session{
+		ID:    "int-test",
+		Title: "Integration",
+		CWD:   "/tmp",
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("deploy the kubernetes cluster")},
+			{Role: "assistant", Content: client.NewTextContent("I'll help you deploy k8s")},
+		},
+	}
+	store.Save(sess)
+
+	// Search should find it
+	results, err := store.Search("kubernetes", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// List should use index (fast path)
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(summaries))
+	}
+
+	// Delete should clean up index
+	store.Delete("int-test")
+	results, _ = store.Search("kubernetes", 10)
+	if len(results) != 0 {
+		t.Errorf("expected 0 results after delete, got %d", len(results))
+	}
+}
+
+func TestStore_GracefulDegradation(t *testing.T) {
+	dir := t.TempDir()
+	store := &Store{dir: dir, index: nil} // simulate index failure
+
+	sess := &Session{ID: "no-idx", Title: "No index", CWD: "/tmp"}
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save should work without index: %v", err)
+	}
+
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List should fall back to JSON scan: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Errorf("expected 1 session from JSON fallback, got %d", len(summaries))
+	}
+
+	_, err = store.Search("anything", 10)
+	if err == nil {
+		t.Error("Search should return error when index is nil")
+	}
+}
+
+func TestStore_ListEmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+	defer store.Close()
+
+	summaries, err := store.List()
+	if err != nil {
+		t.Fatalf("List on empty dir: %v", err)
+	}
+	if len(summaries) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(summaries))
+	}
+}
+
+func TestStore_FirstLaunchMigration(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write JSON files WITHOUT an index (simulate pre-SQLite sessions)
+	rawStore := &Store{dir: dir, index: nil}
+	rawStore.Save(&Session{
+		ID:    "legacy-1",
+		Title: "Legacy session",
+		CWD:   "/tmp",
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("legacy migration test")},
+		},
+	})
+
+	// Now create store normally — should detect empty index and rebuild
+	store := NewStore(dir)
+	defer store.Close()
+
+	// Should be searchable after migration
+	results, err := store.Search("legacy", 10)
+	if err != nil {
+		t.Fatalf("Search after migration: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result after migration, got %d", len(results))
+	}
+}
+
 func TestStore_LoadLegacyStringContent(t *testing.T) {
 	dir := t.TempDir()
 	legacyJSON := `{
