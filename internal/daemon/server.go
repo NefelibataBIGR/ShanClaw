@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/agent"
 	"github.com/Kocoro-lab/shan/internal/agents"
 	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/shan/internal/skills"
 )
 
 type Server struct {
@@ -52,6 +53,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /agents", s.handleCreateAgent)
 	mux.HandleFunc("PUT /agents/{name}", s.handleUpdateAgent)
 	mux.HandleFunc("DELETE /agents/{name}", s.handleDeleteAgent)
+	mux.HandleFunc("PUT /agents/{name}/config", s.handlePutAgentConfig)
+	mux.HandleFunc("DELETE /agents/{name}/config", s.handleDeleteAgentConfig)
+	mux.HandleFunc("PUT /agents/{name}/commands/{cmd}", s.handlePutCommand)
+	mux.HandleFunc("DELETE /agents/{name}/commands/{cmd}", s.handleDeleteCommand)
+	mux.HandleFunc("PUT /agents/{name}/skills/{skill}", s.handlePutSkill)
+	mux.HandleFunc("DELETE /agents/{name}/skills/{skill}", s.handleDeleteSkill)
 	mux.HandleFunc("GET /sessions", s.handleSessions)
 	mux.HandleFunc("GET /sessions/search", s.handleSessionSearch)
 	mux.HandleFunc("POST /message", s.handleMessage)
@@ -473,6 +480,128 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	s.deps.SessionCache.Evict(name)
 	s.deps.SessionCache.Unlock(name)
 	if err := agents.DeleteAgentDir(s.deps.AgentsDir, name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// --- Agent sub-resource handlers ---
+
+func (s *Server) handlePutAgentConfig(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := agents.ValidateAgentName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var cfg agents.AgentConfigAPI
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if cfg.Tools != nil {
+		if err := agents.ValidateToolsFilter(cfg.Tools); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if err := agents.WriteAgentConfig(s.deps.AgentsDir, name, &cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleDeleteAgentConfig(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := agents.ValidateAgentName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	path := filepath.Join(s.deps.AgentsDir, name, "config.yaml")
+	os.Remove(path)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handlePutCommand(w http.ResponseWriter, r *http.Request) {
+	agentName := r.PathValue("name")
+	cmdName := r.PathValue("cmd")
+	if err := agents.ValidateAgentName(agentName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := agents.ValidateCommandName(cmdName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Content == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+	if err := agents.WriteAgentCommand(s.deps.AgentsDir, agentName, cmdName, body.Content); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
+	agentName := r.PathValue("name")
+	cmdName := r.PathValue("cmd")
+	if err := agents.ValidateAgentName(agentName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := agents.DeleteAgentCommand(s.deps.AgentsDir, agentName, cmdName); err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
+	agentName := r.PathValue("name")
+	skillName := r.PathValue("skill")
+	if err := agents.ValidateAgentName(agentName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := agents.ValidateCommandName(skillName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var skill skills.Skill
+	if err := json.NewDecoder(r.Body).Decode(&skill); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	skill.Name = skillName // URL takes precedence
+	if skill.Type != skills.SkillTypePrompt {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported skill type %q", skill.Type))
+		return
+	}
+	if skill.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required for prompt-type skills")
+		return
+	}
+	if err := agents.WriteAgentSkill(s.deps.AgentsDir, agentName, &skill); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+	agentName := r.PathValue("name")
+	skillName := r.PathValue("skill")
+	if err := agents.ValidateAgentName(agentName); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := agents.DeleteAgentSkill(s.deps.AgentsDir, agentName, skillName); err != nil && !os.IsNotExist(err) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
