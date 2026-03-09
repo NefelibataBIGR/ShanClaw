@@ -68,6 +68,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /instructions", s.handleGetInstructions)
 	mux.HandleFunc("PUT /instructions", s.handlePutInstructions)
 	mux.HandleFunc("GET /sessions", s.handleSessions)
+	mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /sessions/search", s.handleSessionSearch)
 	mux.HandleFunc("POST /message", s.handleMessage)
 	mux.HandleFunc("POST /shutdown", s.handleShutdown)
@@ -132,14 +133,26 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type agentInfo struct {
-		Name      string `json:"name"`
-		HasMemory bool   `json:"has_memory"`
+		Name         string `json:"name"`
+		HasMemory    bool   `json:"has_memory"`
+		HasConfig    bool   `json:"has_config"`
+		CommandCount int    `json:"command_count"`
+		SkillCount   int    `json:"skill_count"`
 	}
 	result := make([]agentInfo, 0, len(names))
 	for _, name := range names {
-		memPath := filepath.Join(s.deps.AgentsDir, name, "MEMORY.md")
-		_, statErr := os.Stat(memPath)
-		result = append(result, agentInfo{Name: name, HasMemory: statErr == nil})
+		dir := filepath.Join(s.deps.AgentsDir, name)
+		_, memErr := os.Stat(filepath.Join(dir, "MEMORY.md"))
+		_, cfgErr := os.Stat(filepath.Join(dir, "config.yaml"))
+		cmdFiles, _ := filepath.Glob(filepath.Join(dir, "commands", "*.md"))
+		skillFiles, _ := filepath.Glob(filepath.Join(dir, "skills", "*.yaml"))
+		result = append(result, agentInfo{
+			Name:         name,
+			HasMemory:    memErr == nil,
+			HasConfig:    cfgErr == nil,
+			CommandCount: len(cmdFiles),
+			SkillCount:   len(skillFiles),
+		})
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"agents": result})
 }
@@ -175,6 +188,35 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		summaries = []session.SessionSummary{}
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": summaries})
+}
+
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if s.deps == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+	agentName := r.URL.Query().Get("agent")
+	if agentName != "" {
+		if err := agents.ValidateAgentName(agentName); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	mgr := s.deps.SessionCache.GetOrCreate(agentName)
+	if err := mgr.Delete(id); err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %q not found", id))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) handleSessionSearch(w http.ResponseWriter, r *http.Request) {
@@ -821,6 +863,32 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		resp["restart_required"] = true
 		resp["restart_reason"] = "endpoint or api_key changed — restart daemon to apply"
 	}
+
+	// MCP server status for UI indicators
+	if len(newCfg.MCPServers) > 0 {
+		mcpStatus := make(map[string]string, len(newCfg.MCPServers))
+		for name, srv := range newCfg.MCPServers {
+			if srv.Disabled {
+				mcpStatus[name] = "disabled"
+			} else {
+				mcpStatus[name] = "connected"
+			}
+		}
+		// Mark failed servers from registration error
+		if regErr != nil {
+			errMsg := regErr.Error()
+			for name := range newCfg.MCPServers {
+				if newCfg.MCPServers[name].Disabled {
+					continue
+				}
+				if strings.Contains(errMsg, name+":") {
+					mcpStatus[name] = "error"
+				}
+			}
+		}
+		resp["mcp_servers"] = mcpStatus
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
