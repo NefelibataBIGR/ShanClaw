@@ -147,11 +147,12 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 
 	err = client.StreamSSE(timeoutCtx, streamURL, t.apiKey, func(ev client.SSEEvent) {
 		var event struct {
-			Message  string `json:"message"`
-			AgentID  string `json:"agent_id"`
-			Delta    string `json:"delta"`
-			Response string `json:"response"`
-			Type     string `json:"type"`
+			Message  string                 `json:"message"`
+			AgentID  string                 `json:"agent_id"`
+			Delta    string                 `json:"delta"`
+			Response string                 `json:"response"`
+			Type     string                 `json:"type"`
+			Payload  map[string]interface{} `json:"payload"`
 		}
 		json.Unmarshal([]byte(ev.Data), &event)
 
@@ -233,6 +234,30 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 			t.streamStatus("  . " + statusMsg("", event.Message, "Waiting..."))
 		case "APPROVAL_DECISION":
 			// no-op
+
+		// --- Swarm-specific events ---
+		case "LEAD_DECISION":
+			if msg := event.Message; msg != "" && len(msg) <= 150 {
+				t.streamStatus("  ~ " + msg)
+			}
+		case "TASKLIST_UPDATED":
+			if payload := event.Payload; payload != nil {
+				if tasks, ok := payload["tasks"].([]interface{}); ok && len(tasks) > 0 {
+					completed := 0
+					for _, task := range tasks {
+						if tm, ok := task.(map[string]interface{}); ok {
+							if tm["status"] == "completed" {
+								completed++
+							}
+						}
+					}
+					t.streamStatus(fmt.Sprintf("  > Tasks: %d/%d done", completed, len(tasks)))
+				}
+			}
+		case "HITL_RESPONSE":
+			if event.Message != "" {
+				t.streamStatus("  ~ Lead responding to your input")
+			}
 
 		case "WORKFLOW_COMPLETED":
 			if finalResult == "" {

@@ -1279,11 +1279,12 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 		err = client.StreamSSE(context.Background(), streamURL, m.cfg.APIKey, func(ev client.SSEEvent) {
 			// Common event structure — most events have a message field
 			var event struct {
-				Message   string `json:"message"`
-				AgentID   string `json:"agent_id"`
-				Delta     string `json:"delta"`
-				Response  string `json:"response"`
-				Type      string `json:"type"`
+				Message  string                 `json:"message"`
+				AgentID  string                 `json:"agent_id"`
+				Delta    string                 `json:"delta"`
+				Response string                 `json:"response"`
+				Type     string                 `json:"type"`
+				Payload  map[string]interface{} `json:"payload"`
 			}
 			json.Unmarshal([]byte(ev.Data), &event)
 
@@ -1375,6 +1376,30 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 				m.sendOutput("  Research plan ready for review")
 			case "RESEARCH_PLAN_APPROVED":
 				m.sendOutput("  Research plan approved, executing...")
+
+			// --- Swarm-specific events ---
+			case "LEAD_DECISION":
+				if msg := event.Message; msg != "" && len(msg) <= 150 {
+					m.sendOutput("  ~ " + msg)
+				}
+			case "TASKLIST_UPDATED":
+				if payload := event.Payload; payload != nil {
+					if tasks, ok := payload["tasks"].([]interface{}); ok && len(tasks) > 0 {
+						completed := 0
+						for _, task := range tasks {
+							if tm, ok := task.(map[string]interface{}); ok {
+								if tm["status"] == "completed" {
+									completed++
+								}
+							}
+						}
+						m.sendOutput(fmt.Sprintf("  > Tasks: %d/%d done", completed, len(tasks)))
+					}
+				}
+			case "HITL_RESPONSE":
+				if event.Message != "" {
+					m.sendOutput("  ~ Lead responding to your input")
+				}
 
 			default:
 				// Unknown events — show message if present, skip raw JSON
