@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// execGhosttyScript runs an AppleScript targeting the Ghostty application.
 func execGhosttyScript(script string) (string, error) {
 	var cmdArgs []string
 	for _, line := range strings.Split(script, "\n") {
@@ -22,141 +23,151 @@ func execGhosttyScript(script string) (string, error) {
 	return result, nil
 }
 
+// ghosttyNewTab opens a new tab in the frontmost Ghostty window.
+// Returns the window and tab IDs as strings for later reference.
 func ghosttyNewTab(command, title, color string) (windowIdx, tabIdx int, err error) {
+	cmdPart := "/bin/zsh"
+	if command != "" {
+		escaped := strings.ReplaceAll(command, `"`, `\"`)
+		cmdPart = fmt.Sprintf("/bin/zsh -c %q", escaped)
+	}
+	_ = cmdPart // command is sent via input text after creation
+
 	script := `tell application "Ghostty"
 	activate
-	tell front window
-		set newTab to make new tab
-	end tell
+	set win to front window
+	set cfg to new surface configuration
+	set newTab to new tab in win with configuration cfg
+	set t to focused terminal of selected tab of win
 end tell`
 	_, err = execGhosttyScript(script)
 	if err != nil {
 		return 0, 0, fmt.Errorf("new_tab: %w", err)
 	}
+
 	if title != "" {
 		setTabTitle(title)
 	}
-	if color != "" {
-		setTabColor(color)
-	}
 	if command != "" {
-		sendKeys(command + "\n")
+		sendCommand(command)
 	}
+
+	// Get tab index for registry
 	idxScript := `tell application "Ghostty"
-	set winIdx to index of front window
 	tell front window
 		set tabIdx to count of tabs
 	end tell
-	return (winIdx as text) & "," & (tabIdx as text)
+	return tabIdx as text
 end tell`
 	result, err := execGhosttyScript(idxScript)
 	if err != nil {
 		return 1, 1, nil
 	}
-	fmt.Sscanf(result, "%d,%d", &windowIdx, &tabIdx)
-	return windowIdx, tabIdx, nil
+	fmt.Sscanf(result, "%d", &tabIdx)
+	return 1, tabIdx, nil
 }
 
+// ghosttyNewSplit opens a new split in the given direction (right or down).
 func ghosttyNewSplit(direction, command, title, color string) (windowIdx, tabIdx int, err error) {
-	dir := "vertical"
-	if direction == "down" {
-		dir = "horizontal"
-	}
 	script := fmt.Sprintf(`tell application "Ghostty"
 	activate
-	tell front window
-		make new split with properties {direction:"%s"}
-	end tell
-end tell`, dir)
+	set win to front window
+	set t1 to focused terminal of selected tab of win
+	set cfg to new surface configuration
+	set t2 to split t1 direction %s with configuration cfg
+end tell`, direction)
 	_, err = execGhosttyScript(script)
 	if err != nil {
 		return 0, 0, fmt.Errorf("new_split: %w", err)
 	}
+
 	if title != "" {
 		setTabTitle(title)
 	}
-	if color != "" {
-		setTabColor(color)
-	}
 	if command != "" {
-		sendKeys(command + "\n")
+		sendCommand(command)
 	}
+
 	return 1, 1, nil
 }
 
+// ghosttySendInput sends text to a specific tab by index.
 func ghosttySendInput(windowIdx, tabIdx int, text string) error {
 	escaped := strings.ReplaceAll(text, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	script := fmt.Sprintf(`tell application "Ghostty"
-	tell window %d
-		tell tab %d
-			write text "%s"
-		end tell
-	end tell
-end tell`, windowIdx, tabIdx, escaped)
+	set win to window 1
+	set targetTab to tab %d of win
+	set t to focused terminal of targetTab
+	input text "%s" to t
+end tell`, tabIdx, escaped)
 	_, err := execGhosttyScript(script)
 	return err
 }
 
+// setTabTitle sets the title of the current tab in the front window.
 func setTabTitle(title string) {
 	escaped := strings.ReplaceAll(title, `"`, `\"`)
 	script := fmt.Sprintf(`tell application "Ghostty"
-	tell front window
-		set name of current tab to "%s"
+	tell selected tab of front window
+		set title to "%s"
 	end tell
 end tell`, escaped)
 	execGhosttyScript(script)
 }
 
-func setTabColor(hexColor string) {
-	escaped := strings.ReplaceAll(hexColor, `"`, `\"`)
+// sendCommand sends a command string + enter to the focused terminal.
+func sendCommand(command string) {
+	escaped := strings.ReplaceAll(command, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	script := fmt.Sprintf(`tell application "Ghostty"
-	tell front window
-		set color of current tab to "%s"
-	end tell
+	set t to focused terminal of selected tab of front window
+	input text "%s" to t
+	send key "enter" to t
 end tell`, escaped)
 	execGhosttyScript(script)
 }
 
-func sendKeys(text string) {
-	escaped := strings.ReplaceAll(text, `"`, `\"`)
-	script := fmt.Sprintf(`tell application "Ghostty"
-	tell front window
-		write text "%s"
-	end tell
-end tell`, escaped)
-	execGhosttyScript(script)
-}
-
-// SetGhosttyTabAppearance sets tab title and color for the current terminal.
-// Exported for use from tui package.
+// SetGhosttyTabAppearance sets tab title for the current terminal.
+// Exported for use from tui package. Fails silently if not in Ghostty.
 func SetGhosttyTabAppearance(agentName string) {
 	if agentName == "" {
 		return
 	}
 	setTabTitle(agentName)
-	setTabColor(agentColor(agentName))
 }
 
+// ghosttyWorkspaceScript builds an AppleScript that opens a Ghostty window
+// with one tab per agent.
 func ghosttyWorkspaceScript(shanBinary string, agentNames []string) string {
+	escaped := strings.ReplaceAll(shanBinary, `"`, `\"`)
 	var sb strings.Builder
-	sb.WriteString(`tell application "Ghostty"` + "\n")
+	sb.WriteString("tell application \"Ghostty\"\n")
 	sb.WriteString("\tactivate\n")
+	sb.WriteString("\tset cfg to new surface configuration\n")
+
+	// First agent: new window
 	first := agentNames[0]
-	color := agentColor(first)
-	sb.WriteString("\tmake new window\n")
-	sb.WriteString("\ttell front window\n")
-	sb.WriteString(fmt.Sprintf("\t\tset name of current tab to \"%s\"\n", first))
-	sb.WriteString(fmt.Sprintf("\t\tset color of current tab to \"%s\"\n", color))
-	sb.WriteString(fmt.Sprintf("\t\twrite text \"%s --agent %s\"\n", shanBinary, first))
-	for _, name := range agentNames[1:] {
-		c := agentColor(name)
-		sb.WriteString("\t\tset newTab to make new tab\n")
-		sb.WriteString(fmt.Sprintf("\t\tset name of current tab to \"%s\"\n", name))
-		sb.WriteString(fmt.Sprintf("\t\tset color of current tab to \"%s\"\n", c))
-		sb.WriteString(fmt.Sprintf("\t\twrite text \"%s --agent %s\"\n", shanBinary, name))
-	}
+	sb.WriteString("\tset win to new window with configuration cfg\n")
+	sb.WriteString("\tset t to focused terminal of selected tab of win\n")
+	sb.WriteString(fmt.Sprintf("\ttell selected tab of win\n"))
+	sb.WriteString(fmt.Sprintf("\t\tset title to \"%s\"\n", first))
 	sb.WriteString("\tend tell\n")
+	sb.WriteString(fmt.Sprintf("\tinput text \"%s --agent %s\" to t\n", escaped, first))
+	sb.WriteString("\tsend key \"enter\" to t\n")
+
+	// Remaining agents: new tabs
+	for _, name := range agentNames[1:] {
+		sb.WriteString("\tset cfg to new surface configuration\n")
+		sb.WriteString("\tset newTab to new tab in win with configuration cfg\n")
+		sb.WriteString("\tset t to focused terminal of selected tab of win\n")
+		sb.WriteString(fmt.Sprintf("\ttell selected tab of win\n"))
+		sb.WriteString(fmt.Sprintf("\t\tset title to \"%s\"\n", name))
+		sb.WriteString("\tend tell\n")
+		sb.WriteString(fmt.Sprintf("\tinput text \"%s --agent %s\" to t\n", escaped, name))
+		sb.WriteString("\tsend key \"enter\" to t\n")
+	}
+
 	sb.WriteString("end tell")
 	return sb.String()
 }

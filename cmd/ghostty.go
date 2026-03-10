@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/spf13/cobra"
@@ -18,10 +17,9 @@ var workspaceCmd = &cobra.Command{
 	Short: "Open a Ghostty window with one tab per agent",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		shanBin, err := os.Executable()
-		if err != nil {
-			shanBin = "shan"
-		}
+		// Use "shan" (expects it in PATH via homebrew install).
+		// os.Executable() returns temp paths for go run/go build.
+		shanBin := "shan"
 		script := tools.GhosttyWorkspaceScript(shanBin, args)
 		if script == "" {
 			return fmt.Errorf("ghostty workspace requires macOS")
