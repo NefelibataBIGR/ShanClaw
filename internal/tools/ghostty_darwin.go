@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// ghosttyAvailable checks if Ghostty.app is installed on this machine.
+func ghosttyAvailable() bool {
+	out, err := exec.Command("mdfind", "kMDItemCFBundleIdentifier == 'com.mitchellh.ghostty'").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
 // execGhosttyScript runs an AppleScript targeting the Ghostty application.
 func execGhosttyScript(script string) (string, error) {
 	var cmdArgs []string
@@ -176,6 +185,9 @@ func ghosttyWorkspaceScript(shanBinary string, agentNames []string) string {
 func GhosttyWorkspaceScript(shanBinary string, agentNames []string) string {
 	return ghosttyWorkspaceScript(shanBinary, agentNames)
 }
+
+// GhosttyAvailable is the exported wrapper for cmd package.
+func GhosttyAvailable() bool { return ghosttyAvailable() }
 
 // ExecGhosttyScript is the exported wrapper for cmd package.
 func ExecGhosttyScript(script string) error {

@@ -135,6 +135,13 @@ func (t *GhosttyTool) Run(ctx context.Context, argsJSON string) (agent.ToolResul
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
+	if !ghosttyAvailable() {
+		return agent.ToolResult{
+			Content: "Ghostty is not installed. Use the applescript tool with macOS Terminal.app instead. " +
+				"Example: tell application \"Terminal\" to do script \"<command>\"",
+			IsError: true,
+		}, nil
+	}
 	switch args.Action {
 	case "new_tab":
 		return t.runNewTab(args)
