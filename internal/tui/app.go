@@ -69,6 +69,13 @@ type serverToolsLoadedMsg struct {
 // streamOutputMsg is sent from goroutines to update the TUI output safely.
 type streamOutputMsg struct {
 	text string
+	raw  string // original markdown text (empty for plain text)
+}
+
+// outputBlock stores both raw and rendered text so output can be re-rendered on resize.
+type outputBlock struct {
+	raw      string // original markdown (empty for plain text)
+	rendered string // width-specific rendered text
 }
 
 // spinnerTickMsg is a slow fallback that advances spinner phrase text
@@ -102,7 +109,7 @@ type Model struct {
 	toolCleanup   func()
 	agentLoop     *agent.AgentLoop
 	textarea      textarea.Model
-	output        []string
+	output        []outputBlock
 	pendingPrints []string
 	processingStartTime time.Time
 	spinnerIdx          int
@@ -567,9 +574,13 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
+		oldWidth := m.width
 		m.width = msg.Width
 		m.height = msg.Height
 		m.textarea.SetWidth(msg.Width)
+		if oldWidth != msg.Width && oldWidth > 0 && len(m.output) > 0 {
+			return m, m.rerenderOutput()
+		}
 		return m, nil
 
 	case spinnerFrameMsg:
@@ -712,7 +723,11 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamOutputMsg:
-		m.appendOutput(msg.text)
+		if msg.raw != "" {
+			m.appendMarkdownOutput(msg.raw, msg.text)
+		} else {
+			m.appendOutput(msg.text)
+		}
 		return m, nil
 
 	case toolCallMsg:
@@ -891,7 +906,8 @@ func (m *Model) loadSessionHistory(sess *session.Session) {
 			case "user":
 				m.appendOutput(fmt.Sprintf("%s %s", pm, msg.Content.Text()))
 			case "assistant":
-				m.appendOutput(m.renderMarkdownCached(msg.Content.Text(), width))
+				raw := msg.Content.Text()
+				m.appendMarkdownOutput(raw, m.renderMarkdownCached(raw, width))
 				m.appendOutput("")
 			}
 		}
@@ -905,7 +921,8 @@ func (m *Model) loadSessionHistory(sess *session.Session) {
 			case "user":
 				m.sendOutput(fmt.Sprintf("%s %s", pm, msg.Content.Text()))
 			case "assistant":
-				m.sendOutput(m.renderMarkdownCached(msg.Content.Text(), width))
+				raw := msg.Content.Text()
+				m.sendMarkdownOutput(raw, m.renderMarkdownCached(raw, width))
 				m.sendOutput("")
 			}
 		}
@@ -913,8 +930,13 @@ func (m *Model) loadSessionHistory(sess *session.Session) {
 }
 
 func (m *Model) appendOutput(text string) {
-	m.output = append(m.output, text)
+	m.output = append(m.output, outputBlock{rendered: text})
 	m.pendingPrints = append(m.pendingPrints, text)
+}
+
+func (m *Model) appendMarkdownOutput(raw, rendered string) {
+	m.output = append(m.output, outputBlock{raw: raw, rendered: rendered})
+	m.pendingPrints = append(m.pendingPrints, rendered)
 }
 
 func (m *Model) adjustTextareaHeight() {
@@ -943,6 +965,32 @@ func (m *Model) flushPrints() tea.Cmd {
 	return func() tea.Msg {
 		for _, text := range texts {
 			m.program.Println(text)
+		}
+		return nil
+	}
+}
+
+// rerenderOutput re-renders all output blocks at the current width and reprints them.
+// Used when the terminal is resized. Returns a tea.Cmd that clears the screen and
+// reprints all output via program.Println.
+func (m *Model) rerenderOutput() tea.Cmd {
+	width := m.width
+	blocks := make([]outputBlock, len(m.output))
+	copy(blocks, m.output)
+
+	// Re-render markdown blocks at new width
+	for i, b := range blocks {
+		if b.raw != "" {
+			blocks[i].rendered = m.renderMarkdownCached(b.raw, width)
+			m.output[i].rendered = blocks[i].rendered
+		}
+	}
+
+	return func() tea.Msg {
+		// Clear screen: move cursor to top-left + clear entire screen
+		m.program.Println("\033[2J\033[H")
+		for _, b := range blocks {
+			m.program.Println(b.rendered)
 		}
 		return nil
 	}
@@ -1036,6 +1084,15 @@ func (m *Model) sendOutput(text string) {
 		return
 	}
 	m.appendOutput(text)
+}
+
+// sendMarkdownOutput sends pre-rendered markdown with raw source for resize re-rendering.
+func (m *Model) sendMarkdownOutput(raw, rendered string) {
+	if m.program != nil {
+		m.program.Send(streamOutputMsg{text: rendered, raw: raw})
+		return
+	}
+	m.appendMarkdownOutput(raw, rendered)
 }
 
 // sendStatus sends an ephemeral status pill from a goroutine. It replaces the
@@ -1401,7 +1458,7 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 		}
 
 		if finalResult != "" {
-				m.sendOutput(m.renderMarkdownCached(finalResult, m.width))
+				m.sendMarkdownOutput(finalResult, m.renderMarkdownCached(finalResult, m.width))
 			sess := m.sessions.Current()
 			sess.Messages = append(sess.Messages,
 				client.Message{Role: "user", Content: client.NewTextContent(query)},
@@ -1513,7 +1570,7 @@ func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.To
 }
 
 func (h *tuiEventHandler) OnText(text string) {
-	h.model.sendOutput(h.model.renderMarkdownCached(text, h.model.width))
+	h.model.sendMarkdownOutput(text, h.model.renderMarkdownCached(text, h.model.width))
 }
 
 func (h *tuiEventHandler) OnStreamDelta(delta string) {
