@@ -29,7 +29,7 @@ func (t *ScheduleTool) Info() agent.ToolInfo {
 	case "create":
 		return agent.ToolInfo{
 			Name:        "schedule_create",
-			Description: "Create a scheduled task that runs a shan agent on a cron schedule via macOS launchd. Supports full cron syntax (ranges, steps, lists).",
+			Description: "Create a scheduled task that runs a shan agent on a cron schedule via macOS launchd. Supports full cron syntax (ranges, steps, lists). Each run saves its result as a session (searchable via session_search) and logs to ~/.shannon/logs/schedule-<id>.log.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

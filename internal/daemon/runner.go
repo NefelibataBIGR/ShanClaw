@@ -89,13 +89,11 @@ func (d *ServerDeps) ShutdownCleanup() {
 	}
 }
 
-// DaemonDeniedTools are tools that should not be auto-approved in daemon mode.
-// Schedule mutation tools can create persistent system-level side effects.
-var DaemonDeniedTools = map[string]bool{
-	"schedule_create": true,
-	"schedule_update": true,
-	"schedule_remove": true,
-}
+// DaemonDeniedTools are tools that are not auto-approved in daemon mode.
+// Currently empty — all tools are auto-approved since users explicitly
+// request actions via chat. Schedule tools were previously denied here
+// but that prevented legitimate use from Ptfrog.
+var DaemonDeniedTools = map[string]bool{}
 
 // RunAgent executes a single agent turn using the shared dependencies.
 // The caller provides an EventHandler to control streaming, approval, and

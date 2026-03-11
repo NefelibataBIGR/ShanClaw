@@ -21,7 +21,7 @@ type sessionSearchArgs struct {
 func (t *SessionSearchTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name:        "session_search",
-		Description: "Search through past session messages for keyword matches",
+		Description: "Search through past session messages for keyword matches. Includes results from scheduled task runs — use this to check what a schedule found.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
