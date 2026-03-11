@@ -24,8 +24,8 @@ jobs:
         run: |
           cd internal/tools/axserver
           swift build -c release --arch arm64 --arch x86_64
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp .build/apple/Products/Release/ax_server "$GITHUB_WORKSPACE/dist/ax_server"
+          mkdir -p "$GITHUB_WORKSPACE/build"
+          cp .build/apple/Products/Release/ax_server "$GITHUB_WORKSPACE/build/ax_server"
 
       - uses: goreleaser/goreleaser-action@v6
         with:

@@ -18,9 +18,9 @@ archives:
   - format: tar.gz
     name_template: "shan_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
-      # ax_server is built by CI (macOS only). Present in dist/ at release time.
+      # ax_server is built by CI into build/ (not dist/ — GoReleaser cleans dist/).
       # Included in all archives; Linux users get an unused binary (~2-3MB).
-      - src: dist/ax_server
+      - src: build/ax_server
         dst: .
         strip_parent: true
 
