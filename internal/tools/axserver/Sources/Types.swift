@@ -32,16 +32,19 @@ struct Params: Decodable {
     let condition: String?
     let timeout: Double?
     let interval: Double?
+    let roles: [String]?
+    let maxLabels: Int?
 
     enum CodingKeys: String, CodingKey {
         case pid, filter, path, value, query, role, identifier, type
         case x, y, button, clicks, key, modifiers, dx, dy
-        case condition, timeout, interval, verify
+        case condition, timeout, interval, verify, roles
         case maxDepth = "max_depth"
         case semanticBudget = "semantic_budget"
         case expectedRole = "expected_role"
         case appName = "app_name"
         case windowTitle = "window_title"
+        case maxLabels = "max_labels"
     }
 }
 
@@ -84,6 +87,30 @@ struct ReadTreeResult: Encodable {
 struct RefEntry: Encodable {
     let path: String
     let role: String
+}
+
+struct AnnotationEntry: Encodable {
+    let label: Int
+    let ref: String
+    let role: String
+    var title: String?
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
+struct AnnotateResult: Encodable {
+    let app: String
+    let pid: Int
+    let window: String
+    let annotations: [AnnotationEntry]
+    let refPaths: [String: RefEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case app, pid, window, annotations
+        case refPaths = "ref_paths"
+    }
 }
 
 struct FindResult: Encodable {

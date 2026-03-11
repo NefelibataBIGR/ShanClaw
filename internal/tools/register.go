@@ -52,6 +52,7 @@ func RegisterLocalTools(cfg *config.Config) (*agent.ToolRegistry, func()) {
 	reg.Register(browser)
 	reg.Register(&ScreenshotTool{})
 	reg.Register(&ComputerTool{client: axClient})
+	reg.Register(&WaitTool{client: axClient})
 
 	// Schedule tools
 	if shanDir := config.ShannonDir(); shanDir != "" {

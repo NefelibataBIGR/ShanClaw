@@ -13,6 +13,15 @@ func performClick(pid: Int, path: String, expectedRole: String?) -> (ActionResul
     if err == .success {
         return (ActionResult(result: "pressed \(role) '\(title)'", role: role), nil)
     }
+
+    // Auto-fallback: if AXPress fails, try a synthetic mouse click at the element's center
+    if let (cx, cy) = elementCenter(el) {
+        let (clickResult, clickErr) = InputDriver.mouseEvent(type: "click", x: cx, y: cy)
+        if clickErr == nil {
+            return (ActionResult(result: "synthetic click on \(role) '\(title)' at (\(Int(cx)), \(Int(cy))) — AXPress failed (error \(err.rawValue))", role: role), nil)
+        }
+    }
+
     return (nil, ErrorInfo(code: Int(err.rawValue), message: "AXPress failed on \(role) '\(title)' (error \(err.rawValue)). Action may not be supported."))
 }
 

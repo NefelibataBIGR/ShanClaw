@@ -67,6 +67,36 @@ func resolveElement(pid: Int, path: String) -> AXUIElement? {
     return current
 }
 
+/// Returns the center coordinates (screen space) of an AXUIElement, or nil if position/size unavailable.
+func elementCenter(_ el: AXUIElement) -> (Double, Double)? {
+    var posVal: CFTypeRef?
+    var sizeVal: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, "AXPosition" as CFString, &posVal) == .success,
+          AXUIElementCopyAttributeValue(el, "AXSize" as CFString, &sizeVal) == .success else {
+        return nil
+    }
+    var point = CGPoint.zero
+    var size = CGSize.zero
+    AXValueGetValue(posVal as! AXValue, .cgPoint, &point)
+    AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
+    return (Double(point.x + size.width / 2), Double(point.y + size.height / 2))
+}
+
+/// Returns the frame (origin + size) of an AXUIElement in screen coordinates, or nil if unavailable.
+func elementFrame(_ el: AXUIElement) -> (x: Double, y: Double, width: Double, height: Double)? {
+    var posVal: CFTypeRef?
+    var sizeVal: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, "AXPosition" as CFString, &posVal) == .success,
+          AXUIElementCopyAttributeValue(el, "AXSize" as CFString, &sizeVal) == .success else {
+        return nil
+    }
+    var point = CGPoint.zero
+    var size = CGSize.zero
+    AXValueGetValue(posVal as! AXValue, .cgPoint, &point)
+    AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
+    return (Double(point.x), Double(point.y), Double(size.width), Double(size.height))
+}
+
 /// Resolves an app name to its PID via NSWorkspace.
 func resolvePID(appName: String) -> Int? {
     for app in NSWorkspace.shared.runningApplications {

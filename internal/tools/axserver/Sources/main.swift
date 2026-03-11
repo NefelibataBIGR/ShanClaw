@@ -31,7 +31,7 @@ while let line = readLine(strippingNewline: true) {
         x: nil, y: nil, button: nil, clicks: nil,
         key: nil, modifiers: nil, dx: nil, dy: nil,
         windowTitle: nil, verify: nil, condition: nil,
-        timeout: nil, interval: nil
+        timeout: nil, interval: nil, roles: nil, maxLabels: nil
     )
 
     let response = dispatch(id: req.id, method: req.method, params: params)
@@ -165,6 +165,35 @@ func dispatch(id: Int64, method: String, params: Params) -> Response {
         }
         let windows = FocusManager.listWindows(pid: pid)
         return Response(id: id, result: AnyCodable(windows))
+
+    case "wait_for":
+        guard let condition = params.condition else {
+            return Response(id: id, error: ErrorInfo(code: -1, message: "wait_for requires 'condition'"))
+        }
+        let pid = params.pid ?? frontmostPID()
+        guard pid > 0 else {
+            return Response(id: id, error: ErrorInfo(code: -1, message: "Cannot determine target app"))
+        }
+        let timeout = params.timeout ?? 10.0
+        let interval = params.interval ?? 0.5
+        let (result, err) = waitFor(
+            pid: pid, condition: condition, value: params.value,
+            query: params.query, role: params.role,
+            timeout: timeout, interval: interval
+        )
+        if let err = err { return Response(id: id, error: err) }
+        return Response(id: id, result: AnyCodable(result!))
+
+    case "annotate":
+        let pid = params.pid ?? frontmostPID()
+        guard pid > 0 else {
+            return Response(id: id, error: ErrorInfo(code: -1, message: "Cannot determine frontmost application"))
+        }
+        let maxLabels = params.maxLabels ?? 50
+        guard let result = annotateElements(pid: pid, roles: params.roles, maxLabels: maxLabels) else {
+            return Response(id: id, error: ErrorInfo(code: -1, message: "No windows found. Is the app running and visible?"))
+        }
+        return Response(id: id, result: AnyCodable(result))
 
     default:
         return Response(id: id, error: ErrorInfo(code: -1, message: "Unknown method: \(method)"))

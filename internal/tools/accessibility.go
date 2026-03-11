@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"strings"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
 )
@@ -23,28 +24,30 @@ type AccessibilityTool struct {
 }
 
 type accessibilityArgs struct {
-	Action       string  `json:"action"`
-	App          string  `json:"app,omitempty"`
-	MaxDepth     int     `json:"max_depth,omitempty"`
-	Budget       int     `json:"semantic_budget,omitempty"`
-	Filter       string  `json:"filter,omitempty"`
-	Ref          string  `json:"ref,omitempty"`
-	Value        *string `json:"value,omitempty"`
-	Query        string  `json:"query,omitempty"`
-	Role         string  `json:"role,omitempty"`
-	Identifier   string  `json:"identifier,omitempty"`
-	DX           int     `json:"dx,omitempty"`
-	DY           int     `json:"dy,omitempty"`
+	Action       string   `json:"action"`
+	App          string   `json:"app,omitempty"`
+	MaxDepth     int      `json:"max_depth,omitempty"`
+	Budget       int      `json:"semantic_budget,omitempty"`
+	Filter       string   `json:"filter,omitempty"`
+	Ref          string   `json:"ref,omitempty"`
+	Value        *string  `json:"value,omitempty"`
+	Query        string   `json:"query,omitempty"`
+	Role         string   `json:"role,omitempty"`
+	Identifier   string   `json:"identifier,omitempty"`
+	DX           int      `json:"dx,omitempty"`
+	DY           int      `json:"dy,omitempty"`
+	Roles        []string `json:"roles,omitempty"`
+	MaxLabels    int      `json:"max_labels,omitempty"`
 }
 
 func (t *AccessibilityTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name:        "accessibility",
-		Description: "Read the macOS accessibility tree and interact with UI elements by reference. Use read_tree to see elements, then click/press/set_value/get_value by ref. Use find to search elements by text/role. More reliable than coordinate-based clicking for standard macOS apps.",
+		Description: "Read the macOS accessibility tree and interact with UI elements by reference. Use read_tree to see elements, then click/press/set_value/get_value by ref. Use find to search elements by text/role. Use annotate to get element positions + a screenshot. More reliable than coordinate-based clicking for standard macOS apps.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":          map[string]any{"type": "string", "description": "Action: read_tree, click, press, set_value, get_value, find, scroll"},
+				"action":          map[string]any{"type": "string", "description": "Action: read_tree, click, press, set_value, get_value, find, scroll, annotate"},
 				"app":             map[string]any{"type": "string", "description": "Target app name (defaults to frontmost app)"},
 				"max_depth":       map[string]any{"type": "integer", "description": "Tree depth (default: 25 semantic budget, layout containers cost 0)"},
 				"semantic_budget": map[string]any{"type": "integer", "description": "Semantic depth budget (default: 25, layout containers cost 0 depth)"},
@@ -56,6 +59,8 @@ func (t *AccessibilityTool) Info() agent.ToolInfo {
 				"identifier":     map[string]any{"type": "string", "description": "AX identifier to find (exact match, for find)"},
 				"dx":              map[string]any{"type": "integer", "description": "Horizontal scroll amount in pixels (for scroll)"},
 				"dy":              map[string]any{"type": "integer", "description": "Vertical scroll amount in pixels (for scroll, positive=down)"},
+				"roles":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Filter by AX roles (for annotate, e.g. [\"AXButton\", \"AXTextField\"])"},
+				"max_labels":      map[string]any{"type": "integer", "description": "Max elements to annotate (default: 50, for annotate)"},
 			},
 		},
 		Required: []string{"action"},
@@ -91,9 +96,11 @@ func (t *AccessibilityTool) Run(ctx context.Context, argsJSON string) (agent.Too
 		return t.find(ctx, args)
 	case "scroll":
 		return t.scroll(ctx, args)
+	case "annotate":
+		return t.annotate(ctx, args)
 	default:
 		return agent.ToolResult{
-			Content: fmt.Sprintf("unknown action: %q (valid: read_tree, click, press, set_value, get_value, find, scroll)", args.Action),
+			Content: fmt.Sprintf("unknown action: %q (valid: read_tree, click, press, set_value, get_value, find, scroll, annotate)", args.Action),
 			IsError: true,
 		}, nil
 	}
@@ -332,6 +339,85 @@ func (t *AccessibilityTool) find(ctx context.Context, args accessibilityArgs) (a
 		content = content[:7900] + "\n... [truncated]"
 	}
 	return agent.ToolResult{Content: content}, nil
+}
+
+func (t *AccessibilityTool) annotate(ctx context.Context, args accessibilityArgs) (agent.ToolResult, error) {
+	pid, err := t.resolvePID(ctx, args.App)
+	if err != nil {
+		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
+	}
+
+	params := map[string]any{}
+	if pid > 0 {
+		params["pid"] = pid
+	}
+	if len(args.Roles) > 0 {
+		params["roles"] = args.Roles
+	}
+	if args.MaxLabels > 0 {
+		params["max_labels"] = args.MaxLabels
+	}
+
+	result, err := t.client.Call(ctx, "annotate", params)
+	if err != nil {
+		return agent.ToolResult{Content: fmt.Sprintf("annotate error: %v", err), IsError: true}, nil
+	}
+
+	// Parse the annotation result
+	var annotateResult struct {
+		App         string                       `json:"app"`
+		PID         int                          `json:"pid"`
+		Window      string                       `json:"window"`
+		Annotations []struct {
+			Label  int     `json:"label"`
+			Ref    string  `json:"ref"`
+			Role   string  `json:"role"`
+			Title  string  `json:"title,omitempty"`
+			X      float64 `json:"x"`
+			Y      float64 `json:"y"`
+			Width  float64 `json:"width"`
+			Height float64 `json:"height"`
+		} `json:"annotations"`
+		RefPaths map[string]map[string]string `json:"ref_paths"`
+	}
+	if err := json.Unmarshal(result, &annotateResult); err != nil {
+		return agent.ToolResult{Content: fmt.Sprintf("parse error: %v", err), IsError: true}, nil
+	}
+
+	// Store refs so the agent can click by ref after annotating
+	t.refs = make(map[string]refEntry)
+	t.lastPID = annotateResult.PID
+	for ref, entry := range annotateResult.RefPaths {
+		t.refs[ref] = refEntry{
+			path: entry["path"],
+			role: entry["role"],
+			pid:  annotateResult.PID,
+		}
+	}
+
+	// Build text index
+	lines := make([]string, 0, len(annotateResult.Annotations)+1)
+	lines = append(lines, fmt.Sprintf("App: %s | Window: %s | %d elements", annotateResult.App, annotateResult.Window, len(annotateResult.Annotations)))
+	for _, a := range annotateResult.Annotations {
+		title := a.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		lines = append(lines, fmt.Sprintf("[%d] ref=%s %s %q (%.0f, %.0f, %.0f x %.0f)", a.Label, a.Ref, a.Role, title, a.X, a.Y, a.Width, a.Height))
+	}
+	content := strings.Join(lines, "\n")
+
+	// Take a screenshot alongside the annotation data
+	_, imgBlock, captureErr := CaptureAndEncode(DefaultAPIWidth)
+	var images []agent.ImageBlock
+	if captureErr == nil {
+		images = append(images, imgBlock)
+	}
+
+	return agent.ToolResult{
+		Content: content,
+		Images:  images,
+	}, nil
 }
 
 func (t *AccessibilityTool) scroll(ctx context.Context, args accessibilityArgs) (agent.ToolResult, error) {

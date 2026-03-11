@@ -79,6 +79,84 @@ func walkTree(_ el: AXUIElement, semanticDepth: Int, budget: Int, filter: String
     return elem
 }
 
+func annotateElements(pid: Int, roles: [String]?, maxLabels: Int) -> AnnotateResult? {
+    let appRef = AXUIElementCreateApplication(Int32(pid))
+    let appName: String
+    if let app = NSRunningApplication(processIdentifier: Int32(pid)) {
+        appName = app.localizedName ?? "Unknown"
+    } else {
+        appName = "Unknown"
+    }
+
+    guard let windows = axValue(appRef, "AXWindows") as? [AXUIElement],
+          let win = windows.first else {
+        return nil
+    }
+
+    let winTitle = axString(win, "AXTitle") ?? ""
+    let roleFilter: Set<String>? = roles.map { Set($0) }
+
+    var annotations: [AnnotationEntry] = []
+    var annotateRefPaths: [String: RefEntry] = [:]
+    var labelCounter = 0
+
+    func walkForAnnotation(_ el: AXUIElement, path: String) {
+        guard labelCounter < maxLabels else { return }
+        guard let role = axString(el, "AXRole") else { return }
+
+        let isInteractive = interactiveRoles.contains(role)
+        let matchesFilter = roleFilter == nil || roleFilter!.contains(role)
+
+        if isInteractive && matchesFilter {
+            if let frame = elementFrame(el) {
+                labelCounter += 1
+                let ref = "a\(labelCounter)"
+                let title = axString(el, "AXTitle") ?? axString(el, "AXDescription")
+                annotations.append(AnnotationEntry(
+                    label: labelCounter, ref: ref, role: role,
+                    title: title,
+                    x: frame.x, y: frame.y,
+                    width: frame.width, height: frame.height
+                ))
+                annotateRefPaths[ref] = RefEntry(path: path, role: role)
+            }
+        }
+
+        guard labelCounter < maxLabels else { return }
+        if let kids = axChildren(el) {
+            var childIndex: [String: Int] = [:]
+            for kid in kids {
+                guard let kidRole = axString(kid, "AXRole") else { continue }
+                let idx = childIndex[kidRole, default: 0]
+                childIndex[kidRole] = idx + 1
+                let childPath = "\(path)/\(kidRole)[\(idx)]"
+                walkForAnnotation(kid, path: childPath)
+                if labelCounter >= maxLabels { break }
+            }
+        }
+    }
+
+    if let kids = axChildren(win) {
+        var childIndex: [String: Int] = [:]
+        for kid in kids {
+            guard let kidRole = axString(kid, "AXRole") else { continue }
+            let idx = childIndex[kidRole, default: 0]
+            childIndex[kidRole] = idx + 1
+            let path = "window[0]/\(kidRole)[\(idx)]"
+            walkForAnnotation(kid, path: path)
+            if labelCounter >= maxLabels { break }
+        }
+    }
+
+    return AnnotateResult(
+        app: appName,
+        pid: pid,
+        window: winTitle,
+        annotations: annotations,
+        refPaths: annotateRefPaths
+    )
+}
+
 func readTree(pid: Int, budget: Int, filter: String) -> ReadTreeResult? {
     let appRef = AXUIElementCreateApplication(Int32(pid))
     let appName: String
