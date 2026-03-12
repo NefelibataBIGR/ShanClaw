@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -71,6 +72,7 @@ type ServerDeps struct {
 	Auditor      *audit.AuditLogger
 	HookRunner   *hooks.HookRunner
 	SessionCache *SessionCache
+	EventBus     *EventBus
 }
 
 // Snapshot returns current Config and Registry under read lock.
@@ -133,6 +135,16 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 		} else {
 			agentOverride = a
 		}
+	}
+
+	if deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]string{
+			"agent":        agentName,
+			"source":       req.Source,
+			"sender":       req.Sender,
+			"text_preview": truncate(prompt, 100),
+		})
+		deps.EventBus.Emit(Event{Type: EventMessageReceived, Payload: payload})
 	}
 
 	// Per-agent lock serializes concurrent messages to the same agent.
@@ -270,6 +282,23 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	)
 	if err := sessMgr.Save(); err != nil {
 		log.Printf("daemon: failed to save session: %v", err)
+		if deps.EventBus != nil {
+			payload, _ := json.Marshal(map[string]string{
+				"agent": agentName,
+				"error": fmt.Sprintf("session save failed: %v", err),
+			})
+			deps.EventBus.Emit(Event{Type: EventAgentError, Payload: payload})
+		}
+	}
+
+	if deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"agent":      agentName,
+			"source":     req.Source,
+			"session_id": sess.ID,
+			"text":       result,
+		})
+		deps.EventBus.Emit(Event{Type: EventAgentReply, Payload: payload})
 	}
 
 	log.Printf("daemon: reply to %s (%d tokens, $%.4f)", agentName, usage.TotalTokens, usage.CostUSD)
@@ -285,4 +314,11 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 			CostUSD:      usage.CostUSD,
 		},
 	}, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

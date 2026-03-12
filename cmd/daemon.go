@@ -156,6 +156,19 @@ var daemonStartCmd = &cobra.Command{
 
 		localServer := daemon.NewServer(7533, wsClient, deps, Version)
 		localServer.SetCancelFunc(cancel)
+		localServer.SetApprovalResolvedNotifier(wsClient.SendApprovalResolved)
+		wsClient.SetEventBus(localServer.EventBus())
+		deps.EventBus = localServer.EventBus()
+		broker.SetOnRequest(func(requestID, tool, args string) {
+			if localServer.EventBus() != nil {
+				payload, _ := json.Marshal(map[string]string{
+					"request_id": requestID,
+					"tool":       tool,
+					"args":       args,
+				})
+				localServer.EventBus().Emit(daemon.Event{Type: daemon.EventApprovalRequest, Payload: payload})
+			}
+		})
 		serverErrCh := make(chan error, 1)
 		go func() {
 			serverErrCh <- localServer.Start(ctx)

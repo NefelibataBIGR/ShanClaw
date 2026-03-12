@@ -24,6 +24,7 @@ type ApprovalBroker struct {
 	pending         map[string]chan ApprovalDecision
 	toolAutoApprove map[string]bool // in-memory only, non-bash "always allow"
 	sendFn          func(req ApprovalRequest) error
+	onRequest       func(requestID, tool, args string)
 }
 
 // NewApprovalBroker creates a broker. sendFn sends an approval_request over WS.
@@ -34,6 +35,12 @@ func NewApprovalBroker(sendFn func(req ApprovalRequest) error) *ApprovalBroker {
 		toolAutoApprove: make(map[string]bool),
 		sendFn:          sendFn,
 	}
+}
+
+// SetOnRequest sets a callback invoked when a new approval request is created,
+// before sending it over WS. Used to emit EventApprovalRequest to SSE subscribers.
+func (b *ApprovalBroker) SetOnRequest(fn func(requestID, tool, args string)) {
+	b.onRequest = fn
 }
 
 // Request sends an approval_request and blocks until the response arrives
@@ -55,6 +62,10 @@ func (b *ApprovalBroker) Request(ctx context.Context, channel, threadID, agent, 
 		delete(b.pending, reqID)
 		b.mu.Unlock()
 	}()
+
+	if b.onRequest != nil {
+		b.onRequest(reqID, tool, args)
+	}
 
 	req := ApprovalRequest{
 		Channel:   channel,
