@@ -1,9 +1,11 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Kocoro-lab/shan/internal/client"
 )
@@ -241,6 +243,53 @@ func TestStore_FirstLaunchMigration(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result after migration, got %d", len(results))
+	}
+}
+
+func TestSessionMessageMetaSerialization(t *testing.T) {
+	sess := &Session{
+		ID:        "test-meta",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Title:     "Test",
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("hello")},
+			{Role: "assistant", Content: client.NewTextContent("hi")},
+		},
+		MessageMeta: []MessageMeta{
+			{Source: "slack"},
+			{Source: "slack"},
+		},
+	}
+
+	data, err := json.Marshal(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var loaded Session
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(loaded.MessageMeta) != 2 {
+		t.Fatalf("expected 2 meta entries, got %d", len(loaded.MessageMeta))
+	}
+	if loaded.MessageMeta[0].Source != "slack" {
+		t.Fatalf("expected source 'slack', got %q", loaded.MessageMeta[0].Source)
+	}
+}
+
+func TestSessionMessageMetaBackwardCompat(t *testing.T) {
+	// Old session JSON without message_meta should deserialize cleanly
+	oldJSON := `{"id":"old","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","title":"Old","messages":[]}`
+
+	var sess Session
+	if err := json.Unmarshal([]byte(oldJSON), &sess); err != nil {
+		t.Fatal(err)
+	}
+	if sess.MessageMeta != nil {
+		t.Fatal("expected nil MessageMeta for old session")
 	}
 }
 

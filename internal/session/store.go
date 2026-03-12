@@ -12,6 +12,12 @@ import (
 	"github.com/Kocoro-lab/shan/internal/client"
 )
 
+// MessageMeta holds per-message metadata not sent to the LLM gateway.
+// Indexed parallel to Session.Messages.
+type MessageMeta struct {
+	Source string `json:"source,omitempty"` // "slack", "line", "ptfrog", "webhook"
+}
+
 type Session struct {
 	ID          string           `json:"id"`
 	CreatedAt   time.Time        `json:"created_at"`
@@ -20,6 +26,15 @@ type Session struct {
 	CWD         string           `json:"cwd"`
 	Messages    []client.Message `json:"messages"`
 	RemoteTasks []string         `json:"remote_tasks,omitempty"`
+	MessageMeta []MessageMeta    `json:"message_meta,omitempty"`
+}
+
+// SourceAt returns the source for message at index i, or "unknown" if not available.
+func (s *Session) SourceAt(i int) string {
+	if i < len(s.MessageMeta) && s.MessageMeta[i].Source != "" {
+		return s.MessageMeta[i].Source
+	}
+	return "unknown"
 }
 
 type SessionSummary struct {
