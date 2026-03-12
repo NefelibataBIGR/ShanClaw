@@ -294,7 +294,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		}
 	}
 	if agentOverride != nil {
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, "")
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, "", nil)
 	}
 	loop.SetEnableStreaming(true) // streaming enabled but deltas are suppressed — only final text rendered
 
@@ -706,7 +706,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Re-apply agent override (prompt, memory, MCP context)
 			if m.agentOverride != nil {
 				scopedMCPCtx := tools.ResolveMCPContext(m.cfg, m.agentOverride)
-				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, m.agentOverride.Memory, nil, scopedMCPCtx)
+				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, m.agentOverride.Memory, nil, scopedMCPCtx, nil)
 			} else {
 				mcpCtx := tools.ResolveMCPContext(m.cfg)
 				if mcpCtx != "" {

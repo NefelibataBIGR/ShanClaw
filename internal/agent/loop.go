@@ -20,6 +20,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/instructions"
 	"github.com/Kocoro-lab/shan/internal/permissions"
 	"github.com/Kocoro-lab/shan/internal/prompt"
+	"github.com/Kocoro-lab/shan/internal/skills"
 )
 
 // ErrMaxIterReached is returned when the agent loop hits the iteration limit
@@ -196,6 +197,7 @@ type AgentLoop struct {
 	specificModel   string
 	agentBasePrompt string
 	agentMemory     string
+	agentSkills     []*skills.Skill
 	contextWindow   int
 }
 
@@ -271,13 +273,14 @@ func (a *AgentLoop) SetMaxIterations(n int) {
 // SwitchAgent applies full per-agent scoping: prompt, memory, tool registry,
 // and MCP context. Pass a new ToolRegistry and MCP context string built from
 // the agent's scoped MCP servers. If reg is nil, the existing registry is kept.
-func (a *AgentLoop) SwitchAgent(basePrompt, memory string, reg *ToolRegistry, mcpCtx string) {
+func (a *AgentLoop) SwitchAgent(basePrompt, memory string, reg *ToolRegistry, mcpCtx string, agentSkills []*skills.Skill) {
 	a.agentBasePrompt = basePrompt
 	a.agentMemory = memory
 	if reg != nil {
 		a.tools = reg
 	}
 	a.mcpContext = mcpCtx
+	a.agentSkills = agentSkills
 }
 
 func (a *AgentLoop) SetEnableStreaming(enable bool) {
@@ -326,6 +329,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		ToolNames:    toolNames,
 		MCPContext:   a.mcpContext,
 		CWD:          cwd,
+		Skills:       a.agentSkills,
 	})
 
 	// Append cloud delegation guidance if tool is registered

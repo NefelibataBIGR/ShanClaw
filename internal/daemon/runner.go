@@ -163,7 +163,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	loop.SetEnableStreaming(false)
 	if agentOverride != nil {
 		scopedMCPCtx := tools.ResolveMCPContext(cfg, agentOverride)
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx)
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, nil)
 	} else {
 		scopedMCPCtx := tools.ResolveMCPContext(cfg)
 		if scopedMCPCtx != "" {
