@@ -99,9 +99,16 @@ var daemonStartCmd = &cobra.Command{
 		var broker *daemon.ApprovalBroker
 
 		wsClient = daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
+			// Use msg.Source if Cloud populates it; fall back to msg.Channel during rolling deploy
+			source := msg.Source
+			if source == "" {
+				source = msg.Channel
+			}
 			req := daemon.RunAgentRequest{
-				Text:  msg.Text,
-				Agent: msg.AgentName,
+				Text:   msg.Text,
+				Agent:  msg.AgentName,
+				Source: source,
+				Sender: msg.Sender,
 			}
 			// Fall back to @mention parsing if cloud didn't set agent name.
 			if req.Agent == "" {

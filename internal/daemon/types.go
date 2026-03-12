@@ -79,6 +79,7 @@ type MessagePayload struct {
 	Text      string `json:"text"`
 	AgentName string `json:"agent_name,omitempty"`
 	Timestamp string `json:"timestamp"`
+	Source    string `json:"source,omitempty"` // populated by Cloud; "slack", "line", "webhook"
 }
 
 // ReplyPayload is sent back after agent completes.

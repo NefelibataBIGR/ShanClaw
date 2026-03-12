@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -36,5 +37,19 @@ func TestRunAgentRequest_Validate_WithSessionID(t *testing.T) {
 	req := RunAgentRequest{Text: "do something", SessionID: "sess-123"}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunAgentRequestSource(t *testing.T) {
+	req := RunAgentRequest{
+		Text:   "hello",
+		Agent:  "test",
+		Source: "slack",
+	}
+	data, _ := json.Marshal(req)
+	var decoded RunAgentRequest
+	json.Unmarshal(data, &decoded)
+	if decoded.Source != "slack" {
+		t.Fatalf("expected source 'slack', got %q", decoded.Source)
 	}
 }

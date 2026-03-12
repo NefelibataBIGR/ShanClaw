@@ -25,6 +25,8 @@ type RunAgentRequest struct {
 	Agent      string `json:"agent,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	NewSession bool   `json:"new_session,omitempty"`
+	Source     string `json:"source,omitempty"` // "slack", "line", "ptfrog", "webhook"
+	Sender     string `json:"sender,omitempty"` // user identifier from channel
 }
 
 // Validate checks that the request has the minimum required fields.
@@ -257,6 +259,14 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	sess.Messages = append(sess.Messages,
 		client.Message{Role: "user", Content: client.NewTextContent(prompt)},
 		client.Message{Role: "assistant", Content: client.NewTextContent(result)},
+	)
+	source := req.Source
+	if source == "" {
+		source = "unknown"
+	}
+	sess.MessageMeta = append(sess.MessageMeta,
+		session.MessageMeta{Source: source},
+		session.MessageMeta{Source: source},
 	)
 	if err := sessMgr.Save(); err != nil {
 		log.Printf("daemon: failed to save session: %v", err)

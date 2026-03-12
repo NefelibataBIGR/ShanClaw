@@ -300,6 +300,9 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if req.Source == "" {
+		req.Source = "ptfrog"
+	}
 	if err := req.Validate(); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
