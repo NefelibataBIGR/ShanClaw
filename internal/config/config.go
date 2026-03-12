@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/mcp"
@@ -32,6 +33,7 @@ type Config struct {
 	Agent           AgentConfig                  `mapstructure:"agent" yaml:"agent"`
 	Tools           ToolsConfig                  `mapstructure:"tools" yaml:"tools"`
 	Cloud           CloudConfig                  `mapstructure:"cloud" yaml:"cloud"`
+	Daemon          DaemonConfig                 `mapstructure:"daemon" yaml:"daemon"`
 	Hooks           hooks.HookConfig                `mapstructure:"hooks" yaml:"hooks"`
 	MCPServers      map[string]mcp.MCPServerConfig  `mapstructure:"mcp_servers" yaml:"mcp_servers"`
 	Sources         map[string]ConfigSource         `mapstructure:"-" yaml:"-"`
@@ -61,6 +63,10 @@ type ToolsConfig struct {
 type CloudConfig struct {
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 	Timeout int  `mapstructure:"timeout" yaml:"timeout"` // seconds
+}
+
+type DaemonConfig struct {
+	AutoApprove bool `mapstructure:"auto_approve" yaml:"auto_approve"`
 }
 
 func ShannonDir() string {
@@ -109,6 +115,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("tools.args_truncation", 200)
 	viper.SetDefault("tools.server_tool_timeout", 5)
 	viper.SetDefault("tools.grep_max_results", 100)
+	viper.SetDefault("daemon.auto_approve", false)
 	viper.SetDefault("cloud.enabled", true)
 	viper.SetDefault("cloud.timeout", 3600)
 
@@ -220,7 +227,12 @@ type overlayConfig struct {
 	Permissions     *permissions.PermissionsConfig  `yaml:"permissions"`
 	Agent           *overlayAgentConfig            `yaml:"agent"`
 	Tools           *overlayToolsConfig            `yaml:"tools"`
+	Daemon          *overlayDaemonConfig           `yaml:"daemon"`
 	MCPServers      map[string]mcp.MCPServerConfig `yaml:"mcp_servers"`
+}
+
+type overlayDaemonConfig struct {
+	AutoApprove *bool `yaml:"auto_approve"`
 }
 
 type overlayAgentConfig struct {
@@ -465,6 +477,14 @@ func mergeOverlayFile(cfg *Config, file string, level string) {
 		}
 	}
 
+	// Daemon field-level merge
+	if overlay.Daemon != nil {
+		if overlay.Daemon.AutoApprove != nil {
+			cfg.Daemon.AutoApprove = *overlay.Daemon.AutoApprove
+			cfg.Sources["daemon.auto_approve"] = src
+		}
+	}
+
 	// MCP servers: merge by name (overlay adds or overrides individual servers)
 	if len(overlay.MCPServers) > 0 {
 		if cfg.MCPServers == nil {
@@ -578,6 +598,72 @@ func mergeDefaultMCPServers(cfg *Config) {
 			cfg.MCPServers[name] = defCfg
 		}
 	}
+}
+
+// AppendAllowedCommand adds a command pattern to permissions.allowed_commands
+// in the config file at shannonDir/config.yaml. Skips if already present.
+// Uses flock for concurrent write safety (matches schedules.json pattern).
+func AppendAllowedCommand(shannonDir, pattern string) error {
+	cfgPath := filepath.Join(shannonDir, "config.yaml")
+	lockPath := cfgPath + ".lock"
+
+	// Acquire exclusive lock on persistent lock file.
+	// Do NOT delete the lock file — see schedule.go for rationale.
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("open lock file: %w", err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("flock: %w", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	var raw map[string]interface{}
+	if len(data) > 0 {
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("parse config: %w", err)
+		}
+	}
+	if raw == nil {
+		raw = make(map[string]interface{})
+	}
+
+	perms, _ := raw["permissions"].(map[string]interface{})
+	if perms == nil {
+		perms = make(map[string]interface{})
+		raw["permissions"] = perms
+	}
+
+	var allowed []interface{}
+	if existing, ok := perms["allowed_commands"].([]interface{}); ok {
+		allowed = existing
+	}
+
+	for _, v := range allowed {
+		if s, ok := v.(string); ok && s == pattern {
+			return nil // already present
+		}
+	}
+
+	allowed = append(allowed, pattern)
+	perms["allowed_commands"] = allowed
+
+	out, err := yaml.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	tmpPath := cfgPath + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0600); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	return os.Rename(tmpPath, cfgPath)
 }
 
 // dedup returns a slice with duplicate strings removed, preserving order.

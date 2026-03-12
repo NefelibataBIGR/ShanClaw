@@ -50,9 +50,10 @@ type AgentMCPServerRef struct {
 
 // AgentConfig is the per-agent config overlay loaded from config.yaml.
 type AgentConfig struct {
-	MCPServers *AgentMCPConfig  `yaml:"-"`            // parsed manually for _inherit
-	Tools      *AgentToolsFilter `yaml:"tools"`
-	Agent      *AgentModelConfig `yaml:"agent"`
+	MCPServers  *AgentMCPConfig   `yaml:"-"`            // parsed manually for _inherit
+	Tools       *AgentToolsFilter `yaml:"tools"`
+	Agent       *AgentModelConfig `yaml:"agent"`
+	AutoApprove *bool             `yaml:"auto_approve"`
 }
 
 // AgentModelConfig holds per-agent model/iteration overrides.

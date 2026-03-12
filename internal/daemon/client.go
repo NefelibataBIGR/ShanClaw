@@ -29,6 +29,7 @@ type Client struct {
 	connected     atomic.Bool
 	activeAgent   atomic.Value // stores string
 	startTime     time.Time
+	broker        *ApprovalBroker
 }
 
 func NewClient(endpoint, apiKey string, onMsg func(MessagePayload) string, onSystem func(string)) *Client {
@@ -121,6 +122,20 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// SetApprovalBroker sets the broker for interactive tool approval.
+func (c *Client) SetApprovalBroker(b *ApprovalBroker) {
+	c.broker = b
+}
+
+// SendApprovalRequest sends an approval_request message over WS.
+func (c *Client) SendApprovalRequest(req ApprovalRequest) error {
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	return c.sendEnvelope(DaemonMessage{Type: MsgTypeApprovalRequest, Payload: payload})
+}
+
 // Listen reads messages from the WebSocket and dispatches them.
 // It blocks until the context is cancelled or the connection drops.
 func (c *Client) Listen(ctx context.Context) error {
@@ -130,6 +145,9 @@ func (c *Client) Listen(ctx context.Context) error {
 	c.connected.Store(true)
 	defer func() {
 		c.connected.Store(false)
+		if c.broker != nil {
+			c.broker.CancelAll()
+		}
 		c.conn.Close()
 	}()
 
@@ -167,6 +185,13 @@ func (c *Client) Listen(ctx context.Context) error {
 					case ch.(chan bool) <- ack.Granted:
 					default:
 					}
+				}
+			}
+		case MsgTypeApprovalResponse:
+			var resp ApprovalResponse
+			if err := json.Unmarshal(sm.Payload, &resp); err == nil {
+				if c.broker != nil {
+					c.broker.Resolve(resp.RequestID, resp.Decision)
 				}
 			}
 		case MsgTypeSystem:

@@ -49,11 +49,12 @@ internal/
     summarize.go       # GenerateSummary with Completer interface
     persist.go         # PersistLearnings: write-before-compact memory extraction
   daemon/
+    approval.go        # ApprovalBroker: interactive tool approval over WS
     client.go          # WebSocket client with reconnect, bounded concurrency
     router.go          # SessionKey, SessionCache
     server.go          # HTTP API server (agent CRUD, config, instructions, reload)
     runner.go          # Agent run orchestration for daemon
-    types.go           # Shared daemon types
+    types.go           # Shared daemon types (incl. approval_request/response)
   schedule/
     schedule.go        # Schedule CRUD, atomic writes, file locking, validation
     launchd_darwin.go  # plist generation, launchctl (darwin only)
@@ -109,6 +110,13 @@ Local tools > MCP tools > Gateway tools. Deduplication by name in registry.
 hard-block constants → denied_commands → shell AST parsing → allowed_commands → RequiresApproval + SafeChecker
 ```
 Unknown tools → denied by default (fail-safe).
+
+### Daemon Approval Protocol
+- **Interactive mode** (default): Tools requiring approval send `approval_request` over WS → Cloud relays to Ptfrog → user responds → `approval_response` relayed back. Agent loop blocks until response.
+- **Auto-approve mode** (`daemon.auto_approve: true` or per-agent `auto_approve: true`): Skips WS round-trip, permission engine still enforced.
+- `ApprovalBroker` in `internal/daemon/approval.go` manages pending requests with context cancellation and WS disconnect cleanup.
+- "Always Allow" for bash: persists command to `permissions.allowed_commands` via `config.AppendAllowedCommand`. Non-bash: in-memory only (session lifetime).
+- HTTP API handlers auto-approve (localhost-only, local-trusted).
 
 ### Config Merge Order
 1. `~/.shannon/config.yaml` (global)

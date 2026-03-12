@@ -20,6 +20,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/daemon"
 	"github.com/Kocoro-lab/shan/internal/hooks"
+	"github.com/Kocoro-lab/shan/internal/permissions"
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/spf13/cobra"
 )
@@ -89,7 +90,15 @@ var daemonStartCmd = &cobra.Command{
 		}
 		defer deps.ShutdownCleanup()
 
-		wsClient := daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
+		if !cfg.Daemon.AutoApprove {
+			log.Println("daemon: interactive approval mode — tools requiring approval will be sent to the client for user confirmation. Set daemon.auto_approve: true in config to auto-approve all tools.")
+		}
+
+		// Create WS client first, then broker (broker needs client's send method).
+		var wsClient *daemon.Client
+		var broker *daemon.ApprovalBroker
+
+		wsClient = daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
 			req := daemon.RunAgentRequest{
 				Text:  msg.Text,
 				Agent: msg.AgentName,
@@ -104,7 +113,26 @@ var daemonStartCmd = &cobra.Command{
 				req.Text = msg.Text
 			}
 
-			result, err := daemon.RunAgent(ctx, deps, req, &daemonEventHandler{})
+			// Resolve auto_approve: per-agent overrides global
+			autoApprove := cfg.Daemon.AutoApprove
+			if req.Agent != "" {
+				if a, err := agents.LoadAgent(agentsDir, req.Agent); err == nil && a.Config != nil && a.Config.AutoApprove != nil {
+					autoApprove = *a.Config.AutoApprove
+				}
+			}
+
+			handler := &daemonEventHandler{
+				broker:      broker,
+				ctx:         ctx,
+				channel:     msg.Channel,
+				threadID:    msg.ThreadID,
+				agent:       req.Agent,
+				autoApprove: autoApprove,
+				shannonDir:  shanDir,
+				deps:        deps,
+			}
+
+			result, err := daemon.RunAgent(ctx, deps, req, handler)
 			if err != nil {
 				log.Printf("daemon: agent error: %v", err)
 				return fmt.Sprintf("Sorry, I encountered an error: %v", err)
@@ -115,6 +143,9 @@ var daemonStartCmd = &cobra.Command{
 		}, func(text string) {
 			log.Printf("daemon: [system] %s", text)
 		})
+
+		broker = daemon.NewApprovalBroker(wsClient.SendApprovalRequest)
+		wsClient.SetApprovalBroker(broker)
 
 		localServer := daemon.NewServer(7533, wsClient, deps, Version)
 		localServer.SetCancelFunc(cancel)
@@ -191,7 +222,16 @@ var daemonStatusCmd = &cobra.Command{
 	},
 }
 
-type daemonEventHandler struct{}
+type daemonEventHandler struct {
+	broker      *daemon.ApprovalBroker
+	ctx         context.Context
+	channel     string
+	threadID    string
+	agent       string
+	autoApprove bool
+	shannonDir  string
+	deps        *daemon.ServerDeps
+}
 
 func (h *daemonEventHandler) OnToolCall(name string, args string) {}
 func (h *daemonEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
@@ -201,12 +241,45 @@ func (h *daemonEventHandler) OnText(text string)            {}
 func (h *daemonEventHandler) OnStreamDelta(delta string)    {}
 func (h *daemonEventHandler) OnUsage(usage agent.TurnUsage) {}
 func (h *daemonEventHandler) OnApprovalNeeded(tool string, args string) bool {
-	if daemon.DaemonDeniedTools[tool] {
-		log.Printf("daemon: denied %s (schedule mutation not auto-approved in daemon mode)", tool)
-		return false
+	if h.autoApprove {
+		log.Printf("daemon: auto-approving %s (auto_approve=true)", tool)
+		return true
 	}
-	log.Printf("daemon: auto-approving %s", tool)
-	return true
+	decision := h.broker.Request(h.ctx, h.channel, h.threadID, h.agent, tool, args)
+	if decision == daemon.DecisionAlwaysAllow {
+		if tool == "bash" {
+			cmd := permissions.ExtractField(args, "command")
+			if cmd != "" {
+				if err := config.AppendAllowedCommand(h.shannonDir, cmd); err != nil {
+					log.Printf("daemon: failed to persist always-allow: %v", err)
+				} else {
+					// Update in-memory config under write lock.
+					// Access deps.Config directly (not a captured pointer) so
+					// we always mutate the current config, even after reloads.
+					h.deps.WriteLock()
+					perms := &h.deps.Config.Permissions
+					if !containsString(perms.AllowedCommands, cmd) {
+						perms.AllowedCommands = append(perms.AllowedCommands, cmd)
+					}
+					h.deps.WriteUnlock()
+					log.Printf("daemon: always-allow persisted: %s", cmd)
+				}
+			}
+		} else {
+			h.broker.SetToolAutoApprove(tool)
+			log.Printf("daemon: always-allow (session): %s", tool)
+		}
+	}
+	return decision == daemon.DecisionAllow || decision == daemon.DecisionAlwaysAllow
+}
+
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

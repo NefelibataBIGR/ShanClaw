@@ -18,6 +18,28 @@ const (
 	MsgTypeDisconnect = "disconnect"
 )
 
+// Approval protocol (bidirectional relay via Cloud)
+const (
+	MsgTypeApprovalRequest  = "approval_request"
+	MsgTypeApprovalResponse = "approval_response"
+)
+
+// ApprovalRequest is sent by daemon when a tool needs user approval.
+type ApprovalRequest struct {
+	Channel   string `json:"channel"`
+	ThreadID  string `json:"thread_id"`
+	RequestID string `json:"request_id"`
+	Tool      string `json:"tool"`
+	Args      string `json:"args"`
+	Agent     string `json:"agent"`
+}
+
+// ApprovalResponse is received from the client (via Cloud relay).
+type ApprovalResponse struct {
+	RequestID string           `json:"request_id"`
+	Decision  ApprovalDecision `json:"decision"` // "allow", "deny", "always_allow"
+}
+
 // Channel types
 const (
 	ChannelSlack    = "slack"

@@ -327,11 +327,12 @@ func (h *httpEventHandler) OnToolResult(name string, args string, result agent.T
 func (h *httpEventHandler) OnText(text string)            {}
 func (h *httpEventHandler) OnStreamDelta(delta string)    {}
 func (h *httpEventHandler) OnUsage(usage agent.TurnUsage) {}
+
+// OnApprovalNeeded auto-approves for local HTTP API calls.
+// Threat model: localhost-only, unauthenticated but local-trusted.
+// Permission engine (hard-blocks, denied_commands) runs before this.
+// If daemon ever listens on non-localhost, this MUST require auth.
 func (h *httpEventHandler) OnApprovalNeeded(tool string, args string) bool {
-	if DaemonDeniedTools[tool] {
-		log.Printf("http: denied %s (not auto-approved in daemon mode)", tool)
-		return false
-	}
 	return true
 }
 
@@ -367,10 +368,11 @@ func (h *sseEventHandler) OnStreamDelta(delta string) {
 
 func (h *sseEventHandler) OnUsage(usage agent.TurnUsage) {}
 
+// OnApprovalNeeded auto-approves for local HTTP API calls.
+// Threat model: localhost-only, unauthenticated but local-trusted.
+// Permission engine (hard-blocks, denied_commands) runs before this.
+// If daemon ever listens on non-localhost, this MUST require auth.
 func (h *sseEventHandler) OnApprovalNeeded(tool string, args string) bool {
-	if DaemonDeniedTools[tool] {
-		return false
-	}
 	return true
 }
 
