@@ -21,9 +21,10 @@ import (
 
 // RunAgentRequest is the input for RunAgent.
 type RunAgentRequest struct {
-	Text      string `json:"text"`
-	Agent     string `json:"agent,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
+	Text       string `json:"text"`
+	Agent      string `json:"agent,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	NewSession bool   `json:"new_session,omitempty"`
 }
 
 // Validate checks that the request has the minimum required fields.
@@ -91,11 +92,10 @@ func (d *ServerDeps) ShutdownCleanup() {
 	}
 }
 
-// DaemonDeniedTools are tools that are not auto-approved in daemon mode.
-// Currently empty — all tools are auto-approved since users explicitly
-// request actions via chat. Schedule tools were previously denied here
-// but that prevented legitimate use from Ptfrog.
-var DaemonDeniedTools = map[string]bool{}
+// WriteLock acquires the write lock on ServerDeps. Used by daemon event
+// handler to update in-memory config (e.g., always-allow persistence).
+func (d *ServerDeps) WriteLock()   { d.mu.Lock() }
+func (d *ServerDeps) WriteUnlock() { d.mu.Unlock() }
 
 // RunAgent executes a single agent turn using the shared dependencies.
 // The caller provides an EventHandler to control streaming, approval, and
@@ -138,7 +138,9 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	defer deps.SessionCache.Unlock(agentName)
 
 	sessMgr := deps.SessionCache.GetOrCreate(agentName)
-	if req.SessionID != "" {
+	if req.NewSession {
+		sessMgr.NewSession()
+	} else if req.SessionID != "" {
 		// Resume a specific session by ID (reuses cached manager to avoid DB handle leak).
 		if _, err := sessMgr.Resume(req.SessionID); err != nil {
 			return nil, fmt.Errorf("session not found: %s", req.SessionID)
