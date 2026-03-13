@@ -88,6 +88,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("DELETE /agents/{name}/commands/{cmd}", s.handleDeleteCommand)
 	mux.HandleFunc("PUT /agents/{name}/skills/{skill}", s.handlePutSkill)
 	mux.HandleFunc("DELETE /agents/{name}/skills/{skill}", s.handleDeleteSkill)
+	mux.HandleFunc("GET /skills/downloadable", s.handleListDownloadableSkills)
+	mux.HandleFunc("POST /skills/install/{name}", s.handleInstallSkill)
 	mux.HandleFunc("GET /skills", s.handleListSkills)
 	mux.HandleFunc("GET /skills/{name}", s.handleGetSkill)
 	mux.HandleFunc("PUT /skills/{name}", s.handlePutGlobalSkill)
@@ -1101,6 +1103,51 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		metas = append(metas, skill.ToMeta())
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"skills": metas})
+}
+
+func (s *Server) handleListDownloadableSkills(w http.ResponseWriter, r *http.Request) {
+	globalDir := filepath.Join(s.deps.ShannonDir, "skills")
+	result := make([]skills.DownloadableSkill, 0, len(skills.DownloadableSkills))
+	for _, ds := range skills.DownloadableSkills {
+		installed := false
+		if _, err := os.Stat(filepath.Join(globalDir, ds.Name, "SKILL.md")); err == nil {
+			installed = true
+		}
+		result = append(result, skills.DownloadableSkill{
+			Name:        ds.Name,
+			Description: ds.Description,
+			Installed:   installed,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"skills": result})
+}
+
+func (s *Server) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !skills.IsDownloadable(name) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("skill %q is not available for download", name))
+		return
+	}
+
+	if err := skills.InstallSkillFromRepo(s.deps.ShannonDir, name); err != nil {
+		if strings.Contains(err.Error(), "already installed") {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Load the installed skill to return its metadata
+	sources, _ := s.skillSources()
+	list, _ := skills.LoadSkills(sources...)
+	for _, skill := range list {
+		if skill.Name == name {
+			writeJSON(w, http.StatusCreated, skill.ToMeta())
+			return
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "installed", "name": name})
 }
 
 func (s *Server) handleGetSkill(w http.ResponseWriter, r *http.Request) {
