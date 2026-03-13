@@ -21,6 +21,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/daemon"
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/permissions"
+	"github.com/Kocoro-lab/shan/internal/schedule"
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/spf13/cobra"
 )
@@ -77,6 +78,9 @@ var daemonStartCmd = &cobra.Command{
 		wsEndpoint := strings.Replace(cfg.Endpoint, "https://", "wss://", 1)
 		wsEndpoint = strings.Replace(wsEndpoint, "http://", "ws://", 1)
 		wsEndpoint += "/v1/ws/messages"
+		home, _ := os.UserHomeDir()
+		plistDir := filepath.Join(home, "Library", "LaunchAgents")
+		scheduleManager := schedule.NewManager(filepath.Join(shanDir, "schedules.json"), plistDir)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -90,15 +94,16 @@ var daemonStartCmd = &cobra.Command{
 		}()
 
 		deps := &daemon.ServerDeps{
-			Config:       cfg,
-			GW:           gw,
-			Registry:     reg,
-			Cleanup:      cleanup,
-			ShannonDir:   shanDir,
-			AgentsDir:    agentsDir,
-			Auditor:      auditor,
-			HookRunner:   hookRunner,
-			SessionCache: sessionCache,
+			Config:          cfg,
+			GW:              gw,
+			Registry:        reg,
+			Cleanup:         cleanup,
+			ShannonDir:      shanDir,
+			AgentsDir:       agentsDir,
+			Auditor:         auditor,
+			HookRunner:      hookRunner,
+			SessionCache:    sessionCache,
+			ScheduleManager: scheduleManager,
 		}
 		defer deps.ShutdownCleanup()
 

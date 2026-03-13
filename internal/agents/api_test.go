@@ -74,8 +74,16 @@ func TestWriteAndLoadAgent(t *testing.T) {
 	if a.Commands["greet"] != "Say hello" {
 		t.Errorf("command = %q", a.Commands["greet"])
 	}
-	if len(a.Skills) != 1 || a.Skills[0].Name != "check" {
-		t.Errorf("skills = %v", a.Skills)
+	// Agent skill "check" should be present (bundled skills also loaded).
+	found := false
+	for _, s := range a.Skills {
+		if s.Name == "check" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("agent skill 'check' not found in skills (got %d skills)", len(a.Skills))
 	}
 }
 

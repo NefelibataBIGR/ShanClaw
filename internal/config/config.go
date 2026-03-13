@@ -1,8 +1,6 @@
 package config
 
 import (
-	"bytes"
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,9 +12,6 @@ import (
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
-
-//go:embed mcp_defaults.yaml
-var mcpDefaultsYAML []byte
 
 // ConfigSource tracks which file a config value came from.
 type ConfigSource struct {
@@ -144,12 +139,6 @@ func Load() (*Config, error) {
 	fixMCPEnvKeyCasing(&cfg, globalFile)
 	cfg.Sources = buildDefaultSources()
 	markGlobalSources(&cfg, globalFile)
-
-	// Merge default MCP servers (user entries take precedence)
-	mergeDefaultMCPServers(&cfg)
-
-	// Write MCP defaults into config file or reference file
-	initMCPDefaults(dir, globalFile)
 
 	// Merge project-level configs (.shannon/config.yaml and .shannon/config.local.yaml)
 	cwd, _ := os.Getwd()
@@ -497,63 +486,6 @@ func mergeOverlayFile(cfg *Config, file string, level string) {
 	}
 }
 
-const mcpDefaultsMarker = "# shan-mcp-defaults-catalog"
-
-// initMCPDefaults ensures MCP server defaults are discoverable.
-//   - If config.yaml has NO mcp_servers: section → append the full catalog directly
-//   - If config.yaml already has mcp_servers: → write a reference file and notify once
-func initMCPDefaults(dir, configPath string) {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return
-	}
-
-	// Already processed
-	if bytes.Contains(data, []byte(mcpDefaultsMarker)) {
-		return
-	}
-
-	if bytes.Contains(data, []byte("\nmcp_servers:")) || bytes.HasPrefix(data, []byte("mcp_servers:")) {
-		// User already has mcp_servers — don't touch their config, write reference file
-		refPath := filepath.Join(dir, "mcp_servers.yaml")
-		existing, _ := os.ReadFile(refPath)
-		if !bytes.Equal(existing, mcpDefaultsYAML) {
-			os.WriteFile(refPath, mcpDefaultsYAML, 0600)
-		}
-		// Write marker so we don't notify again
-		if f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-			f.WriteString("\n" + mcpDefaultsMarker + "\n")
-			f.Close()
-		}
-		return
-	}
-
-	// No mcp_servers in config — append the full catalog
-	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	var buf bytes.Buffer
-	buf.WriteString("\n" + mcpDefaultsMarker + "\n")
-	buf.WriteString("mcp_servers:\n")
-
-	// Indent each line of the defaults under mcp_servers:
-	lines := bytes.Split(mcpDefaultsYAML, []byte("\n"))
-	for _, line := range lines {
-		if len(line) == 0 {
-			buf.WriteByte('\n')
-			continue
-		}
-		buf.WriteString("  ")
-		buf.Write(line)
-		buf.WriteByte('\n')
-	}
-
-	f.Write(buf.Bytes())
-}
-
 // fixMCPEnvKeyCasing re-reads MCP servers from YAML to restore env var key casing.
 // Viper normalizes all map keys to lowercase, which breaks env vars (API_KEY → api_key).
 func fixMCPEnvKeyCasing(cfg *Config, configPath string) {
@@ -571,31 +503,6 @@ func fixMCPEnvKeyCasing(cfg *Config, configPath string) {
 		if existing, ok := cfg.MCPServers[name]; ok && len(srv.Env) > 0 {
 			existing.Env = srv.Env
 			cfg.MCPServers[name] = existing
-		}
-	}
-}
-
-// mergeDefaultMCPServers loads the embedded MCP server catalog and merges
-// defaults underneath user-configured servers. User entries always win.
-func mergeDefaultMCPServers(cfg *Config) {
-	if len(mcpDefaultsYAML) == 0 {
-		return
-	}
-
-	var defaults map[string]mcp.MCPServerConfig
-	if err := yaml.Unmarshal(mcpDefaultsYAML, &defaults); err != nil {
-		return
-	}
-
-	if cfg.MCPServers == nil {
-		cfg.MCPServers = defaults
-		return
-	}
-
-	// Only add defaults for servers the user hasn't configured
-	for name, defCfg := range defaults {
-		if _, exists := cfg.MCPServers[name]; !exists {
-			cfg.MCPServers[name] = defCfg
 		}
 	}
 }

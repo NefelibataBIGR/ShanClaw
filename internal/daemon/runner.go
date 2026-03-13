@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
+	"github.com/Kocoro-lab/shan/internal/schedule"
 	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/skills"
 	"github.com/Kocoro-lab/shan/internal/tools"
@@ -62,17 +63,18 @@ type RunAgentUsage struct {
 // ServerDeps holds shared dependencies required by both the WS callback
 // and the HTTP server for running agent loops.
 type ServerDeps struct {
-	mu           sync.RWMutex // guards Config, Registry, Cleanup during reload
-	Config       *config.Config
-	GW           *client.GatewayClient
-	Registry     *agent.ToolRegistry
-	Cleanup      func() // closes MCP connections; swapped on reload
-	ShannonDir   string
-	AgentsDir    string
-	Auditor      *audit.AuditLogger
-	HookRunner   *hooks.HookRunner
-	SessionCache *SessionCache
-	EventBus     *EventBus
+	mu              sync.RWMutex // guards Config, Registry, Cleanup during reload
+	Config          *config.Config
+	GW              *client.GatewayClient
+	Registry        *agent.ToolRegistry
+	Cleanup         func() // closes MCP connections; swapped on reload
+	ShannonDir      string
+	AgentsDir       string
+	Auditor         *audit.AuditLogger
+	HookRunner      *hooks.HookRunner
+	SessionCache    *SessionCache
+	EventBus        *EventBus
+	ScheduleManager *schedule.Manager
 }
 
 // Snapshot returns current Config and Registry under read lock.

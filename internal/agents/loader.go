@@ -50,7 +50,7 @@ type AgentMCPServerRef struct {
 
 // AgentConfig is the per-agent config overlay loaded from config.yaml.
 type AgentConfig struct {
-	MCPServers  *AgentMCPConfig   `yaml:"-"`            // parsed manually for _inherit
+	MCPServers  *AgentMCPConfig   `yaml:"-"` // parsed manually for _inherit
 	Tools       *AgentToolsFilter `yaml:"tools"`
 	Agent       *AgentModelConfig `yaml:"agent"`
 	AutoApprove *bool             `yaml:"auto_approve"`
@@ -58,11 +58,11 @@ type AgentConfig struct {
 
 // AgentModelConfig holds per-agent model/iteration overrides.
 type AgentModelConfig struct {
-	Model          *string  `yaml:"model" json:"model,omitempty"`
-	MaxIterations  *int     `yaml:"max_iterations" json:"max_iterations,omitempty"`
-	Temperature    *float64 `yaml:"temperature" json:"temperature,omitempty"`
-	MaxTokens      *int     `yaml:"max_tokens" json:"max_tokens,omitempty"`
-	ContextWindow  *int     `yaml:"context_window" json:"context_window,omitempty"`
+	Model         *string  `yaml:"model" json:"model,omitempty"`
+	MaxIterations *int     `yaml:"max_iterations" json:"max_iterations,omitempty"`
+	Temperature   *float64 `yaml:"temperature" json:"temperature,omitempty"`
+	MaxTokens     *int     `yaml:"max_tokens" json:"max_tokens,omitempty"`
+	ContextWindow *int     `yaml:"context_window" json:"context_window,omitempty"`
 }
 
 // Agent represents a loaded agent definition.
@@ -113,9 +113,14 @@ func LoadAgent(agentsDir, name string) (*Agent, error) {
 	// Load agent-scoped skills + global skills (agent takes priority via seen map)
 	agentSkillsDir := filepath.Join(dir, "skills")
 	globalSkillsDir := filepath.Join(filepath.Dir(agentsDir), "skills")
+	bundledSrc, err := skills.BundledSkillSource(filepath.Dir(agentsDir))
+	if err != nil {
+		return nil, fmt.Errorf("agent %q: failed to load bundled skills: %w", name, err)
+	}
 	loadedSkills, err := skills.LoadSkills(
 		skills.SkillSource{Dir: agentSkillsDir, Source: "agent:" + name},
 		skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
+		bundledSrc,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
@@ -188,7 +193,14 @@ func loadAgentCommands(dir string) map[string]string {
 // LoadGlobalSkills loads skills from the global skills directory (~/.shannon/skills/).
 func LoadGlobalSkills(shannonDir string) ([]*skills.Skill, error) {
 	globalSkillsDir := filepath.Join(shannonDir, "skills")
-	return skills.LoadSkills(skills.SkillSource{Dir: globalSkillsDir, Source: "global"})
+	bundledSrc, err := skills.BundledSkillSource(shannonDir)
+	if err != nil {
+		return nil, err
+	}
+	return skills.LoadSkills(
+		skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
+		bundledSrc,
+	)
 }
 
 func ListAgents(agentsDir string) ([]string, error) {

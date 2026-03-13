@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Kocoro-lab/shan/internal/skills/bundled"
 	"github.com/adrg/frontmatter"
 	"gopkg.in/yaml.v3"
 )
@@ -16,6 +17,19 @@ import (
 type SkillSource struct {
 	Dir    string
 	Source string
+}
+
+const (
+	SourceGlobal  = "global"
+	SourceBundled = "bundled"
+)
+
+func BundledSkillSource(shannonDir string) (SkillSource, error) {
+	dir, err := bundled.ExtractBundledSkills(shannonDir)
+	if err != nil {
+		return SkillSource{}, err
+	}
+	return SkillSource{Dir: dir, Source: SourceBundled}, nil
 }
 
 type skillFrontmatter struct {

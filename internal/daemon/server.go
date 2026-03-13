@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/agent"
 	"github.com/Kocoro-lab/shan/internal/agents"
 	"github.com/Kocoro-lab/shan/internal/config"
+	"github.com/Kocoro-lab/shan/internal/schedule"
 	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/skills"
 	"github.com/Kocoro-lab/shan/internal/tools"
@@ -84,6 +88,24 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("DELETE /agents/{name}/commands/{cmd}", s.handleDeleteCommand)
 	mux.HandleFunc("PUT /agents/{name}/skills/{skill}", s.handlePutSkill)
 	mux.HandleFunc("DELETE /agents/{name}/skills/{skill}", s.handleDeleteSkill)
+	mux.HandleFunc("GET /skills", s.handleListSkills)
+	mux.HandleFunc("GET /skills/{name}", s.handleGetSkill)
+	mux.HandleFunc("PUT /skills/{name}", s.handlePutGlobalSkill)
+	mux.HandleFunc("DELETE /skills/{name}", s.handleDeleteGlobalSkill)
+	mux.HandleFunc("GET /skills/{name}/scripts", s.handleListSkillScripts)
+	mux.HandleFunc("PUT /skills/{name}/scripts/{filename}", s.handlePutSkillScripts)
+	mux.HandleFunc("DELETE /skills/{name}/scripts/{filename}", s.handleDeleteSkillScripts)
+	mux.HandleFunc("GET /skills/{name}/references", s.handleListSkillReferences)
+	mux.HandleFunc("PUT /skills/{name}/references/{filename}", s.handlePutSkillReferences)
+	mux.HandleFunc("DELETE /skills/{name}/references/{filename}", s.handleDeleteSkillReferences)
+	mux.HandleFunc("GET /skills/{name}/assets", s.handleListSkillAssets)
+	mux.HandleFunc("PUT /skills/{name}/assets/{filename}", s.handlePutSkillAssets)
+	mux.HandleFunc("DELETE /skills/{name}/assets/{filename}", s.handleDeleteSkillAssets)
+	mux.HandleFunc("GET /schedules", s.handleListSchedules)
+	mux.HandleFunc("GET /schedules/{id}", s.handleGetSchedule)
+	mux.HandleFunc("POST /schedules", s.handleCreateSchedule)
+	mux.HandleFunc("PATCH /schedules/{id}", s.handlePatchSchedule)
+	mux.HandleFunc("DELETE /schedules/{id}", s.handleDeleteSchedule)
 	mux.HandleFunc("GET /config", s.handleGetConfig)
 	mux.HandleFunc("PATCH /config", s.handlePatchConfig)
 	mux.HandleFunc("POST /config/reload", s.handleConfigReload)
@@ -97,7 +119,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("POST /shutdown", s.handleShutdown)
 
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
+	ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", s.port))
 	if err != nil {
 		return fmt.Errorf("daemon server listen: %w", err)
 	}
@@ -517,7 +539,12 @@ func isJSONNull(raw json.RawMessage) bool {
 	return strings.TrimSpace(string(raw)) == "null"
 }
 
-const maxBodySize = 1 << 20 // 1 MB
+const (
+	maxBodySize   = 1 << 20 // 1 MB
+	maxUploadSize = 10 << 20
+)
+
+var skillSubresourceFileRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,255}$`)
 
 // decodeBody reads a JSON request body with a size limit. Returns false and
 // writes an error response if decoding fails.
@@ -533,6 +560,101 @@ func decodeBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 		return false
 	}
 	return true
+}
+
+func (s *Server) skillSources() ([]skills.SkillSource, error) {
+	if s.deps == nil {
+		return nil, fmt.Errorf("daemon deps not configured")
+	}
+	global := skills.SkillSource{
+		Dir:    filepath.Join(s.deps.ShannonDir, "skills"),
+		Source: skills.SourceGlobal,
+	}
+	bundled, err := skills.BundledSkillSource(s.deps.ShannonDir)
+	if err != nil {
+		return nil, err
+	}
+	return []skills.SkillSource{
+		global,
+		bundled,
+	}, nil
+}
+
+func (s *Server) resolveSkillDir(name string) (string, string, bool, error) {
+	if s.deps == nil {
+		return "", "", false, fmt.Errorf("daemon deps not configured")
+	}
+	globalDir := filepath.Join(s.deps.ShannonDir, "skills", name)
+	if _, err := os.Stat(filepath.Join(globalDir, "SKILL.md")); err == nil {
+		return globalDir, skills.SourceGlobal, false, nil
+	}
+	bundled, err := skills.BundledSkillSource(s.deps.ShannonDir)
+	if err != nil {
+		return "", "", false, err
+	}
+	bundledDir := filepath.Join(bundled.Dir, name)
+	if _, err := os.Stat(filepath.Join(bundledDir, "SKILL.md")); err == nil {
+		return bundledDir, skills.SourceBundled, true, nil
+	}
+	return "", "", false, os.ErrNotExist
+}
+
+func isValidSkillFileName(name string) bool {
+	if len(name) == 0 || len(name) > 255 {
+		return false
+	}
+	return filepath.Base(name) == name && skillSubresourceFileRE.MatchString(name)
+}
+
+func modeForSubresource(subdir string) os.FileMode {
+	switch subdir {
+	case "scripts":
+		return 0755
+	default:
+		return 0644
+	}
+}
+
+func isScheduleCreateSyncError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.HasPrefix(msg, "schedule created but plist write failed:") ||
+		strings.HasPrefix(msg, "schedule created but launchctl load failed:")
+}
+
+// redactConfigSecrets removes sensitive values from a config map before
+// sending it over the API. Redacts api_key/apiKey at top level and env
+// vars inside mcp_servers/mcpServers entries.
+func redactConfigSecrets(m map[string]interface{}) {
+	if m == nil {
+		return
+	}
+	// Redact top-level API key (both snake_case and camelCase)
+	for _, key := range []string{"api_key", "apiKey"} {
+		if _, ok := m[key]; ok {
+			m[key] = "***"
+		}
+	}
+	// Redact MCP server env vars (contain API keys, tokens)
+	for _, key := range []string{"mcp_servers", "mcpServers"} {
+		servers, ok := m[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, srv := range servers {
+			srvMap, ok := srv.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if env, ok := srvMap["env"].(map[string]interface{}); ok {
+				for k := range env {
+					env[k] = "***"
+				}
+			}
+		}
+	}
 }
 
 // deepMerge merges src into dst recursively (RFC 7386 JSON Merge Patch).
@@ -959,6 +1081,436 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// --- Global skills handlers ---
+
+func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
+	sources, err := s.skillSources()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	list, err := skills.LoadSkills(sources...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	metas := make([]skills.SkillMeta, 0, len(list))
+	for _, skill := range list {
+		metas = append(metas, skill.ToMeta())
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"skills": metas})
+}
+
+func (s *Server) handleGetSkill(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := skills.ValidateSkillName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	sources, err := s.skillSources()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	list, err := skills.LoadSkills(sources...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, skill := range list {
+		if skill.Name == name {
+			detail := skills.SkillDetail{
+				Name:          skill.Name,
+				Description:   skill.Description,
+				Prompt:        skill.Prompt,
+				Source:        skill.Source,
+				License:       skill.License,
+				Compatibility: skill.Compatibility,
+				Metadata:      skill.Metadata,
+			}
+			if len(skill.AllowedTools) > 0 {
+				detail.AllowedTools = skill.AllowedTools
+			}
+			writeJSON(w, http.StatusOK, detail)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, fmt.Sprintf("skill %q not found", name))
+}
+
+func (s *Server) handlePutGlobalSkill(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := skills.ValidateSkillName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var req struct {
+		Description string `json:"description"`
+		Prompt      string `json:"prompt"`
+		License     string `json:"license"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if req.Description == "" {
+		writeError(w, http.StatusBadRequest, "description is required")
+		return
+	}
+	if req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+	if s.deps == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	if err := skills.WriteGlobalSkill(s.deps.ShannonDir, &skills.Skill{
+		Name:        name,
+		Description: req.Description,
+		Prompt:      req.Prompt,
+		License:     req.License,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleDeleteGlobalSkill(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := skills.ValidateSkillName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.deps == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	globalDir := filepath.Join(s.deps.ShannonDir, "skills", name)
+	skillFile := filepath.Join(globalDir, "SKILL.md")
+	if _, err := os.Stat(skillFile); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("skill %q not found in global directory", name))
+		return
+	}
+	if err := skills.DeleteGlobalSkill(s.deps.ShannonDir, name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) handleListSkillScripts(w http.ResponseWriter, r *http.Request) {
+	s.handleListSkillSubresource(w, r, "scripts")
+}
+
+func (s *Server) handlePutSkillScripts(w http.ResponseWriter, r *http.Request) {
+	s.handlePutSkillSubresource(w, r, "scripts")
+}
+
+func (s *Server) handleDeleteSkillScripts(w http.ResponseWriter, r *http.Request) {
+	s.handleDeleteSkillSubresource(w, r, "scripts")
+}
+
+func (s *Server) handleListSkillReferences(w http.ResponseWriter, r *http.Request) {
+	s.handleListSkillSubresource(w, r, "references")
+}
+
+func (s *Server) handlePutSkillReferences(w http.ResponseWriter, r *http.Request) {
+	s.handlePutSkillSubresource(w, r, "references")
+}
+
+func (s *Server) handleDeleteSkillReferences(w http.ResponseWriter, r *http.Request) {
+	s.handleDeleteSkillSubresource(w, r, "references")
+}
+
+func (s *Server) handleListSkillAssets(w http.ResponseWriter, r *http.Request) {
+	s.handleListSkillSubresource(w, r, "assets")
+}
+
+func (s *Server) handlePutSkillAssets(w http.ResponseWriter, r *http.Request) {
+	s.handlePutSkillSubresource(w, r, "assets")
+}
+
+func (s *Server) handleDeleteSkillAssets(w http.ResponseWriter, r *http.Request) {
+	s.handleDeleteSkillSubresource(w, r, "assets")
+}
+
+func (s *Server) handleListSkillSubresource(w http.ResponseWriter, r *http.Request, subdir string) {
+	name := r.PathValue("name")
+	if err := skills.ValidateSkillName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, _, err := s.resolveSkillDir(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("skill %q not found", name))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	target := filepath.Join(dir, subdir)
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, map[string][]string{"files": []string{}})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		files = append(files, entry.Name())
+	}
+	sort.Strings(files)
+	writeJSON(w, http.StatusOK, map[string][]string{"files": files})
+}
+
+func (s *Server) handlePutSkillSubresource(w http.ResponseWriter, r *http.Request, subdir string) {
+	name := r.PathValue("name")
+	if err := skills.ValidateSkillName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, readOnly, err := s.resolveSkillDir(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("skill %q not found", name))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if readOnly {
+		writeError(w, http.StatusBadRequest, "bundled skill is read-only; create a global override first via PUT /skills/{name}")
+		return
+	}
+	filename := r.PathValue("filename")
+	if !isValidSkillFileName(filename) {
+		writeError(w, http.StatusBadRequest, "invalid filename")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	targetDir := filepath.Join(dir, subdir)
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	fileMode := modeForSubresource(subdir)
+	tmp, err := os.CreateTemp(targetDir, ".skill-file-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.Chmod(tmpPath, fileMode); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	dest := filepath.Join(targetDir, filename)
+	if err := os.Rename(tmpPath, dest); err != nil {
+		os.Remove(tmpPath)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) handleDeleteSkillSubresource(w http.ResponseWriter, r *http.Request, subdir string) {
+	name := r.PathValue("name")
+	if err := skills.ValidateSkillName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir, _, readOnly, err := s.resolveSkillDir(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("skill %q not found", name))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if readOnly {
+		writeError(w, http.StatusBadRequest, "bundled skill is read-only; create a global override first via PUT /skills/{name}")
+		return
+	}
+	filename := r.PathValue("filename")
+	if !isValidSkillFileName(filename) {
+		writeError(w, http.StatusBadRequest, "invalid filename")
+		return
+	}
+	if err := os.Remove(filepath.Join(dir, subdir, filename)); err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// --- Schedule handlers ---
+
+func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
+	if s.deps == nil || s.deps.ScheduleManager == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	list, err := s.deps.ScheduleManager.List()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if list == nil {
+		list = []schedule.Schedule{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"schedules": list})
+}
+
+func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.deps == nil || s.deps.ScheduleManager == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	id := r.PathValue("id")
+	sched, err := s.deps.ScheduleManager.Get(id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sched)
+}
+
+func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.deps == nil || s.deps.ScheduleManager == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	var req struct {
+		Agent  string `json:"agent"`
+		Cron   string `json:"cron"`
+		Prompt string `json:"prompt"`
+	}
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	id, err := s.deps.ScheduleManager.Create(req.Agent, req.Cron, req.Prompt)
+	if err != nil {
+		if isScheduleCreateSyncError(err) {
+			// treat as success; sync status already persisted as failed
+		} else if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		} else if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "prompt cannot be empty") {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	sched, err := s.deps.ScheduleManager.Get(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, sched)
+}
+
+func (s *Server) handlePatchSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.deps == nil || s.deps.ScheduleManager == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	id := r.PathValue("id")
+	var patch struct {
+		Cron    *string `json:"cron"`
+		Prompt  *string `json:"prompt"`
+		Enabled *bool   `json:"enabled"`
+	}
+	if !decodeBody(w, r, &patch) {
+		return
+	}
+	if patch.Cron == nil && patch.Prompt == nil && patch.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "no fields to update")
+		return
+	}
+	update := &schedule.UpdateOpts{
+		Cron:    patch.Cron,
+		Prompt:  patch.Prompt,
+		Enabled: patch.Enabled,
+	}
+	if err := s.deps.ScheduleManager.Update(id, update); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "no fields to update") ||
+			strings.Contains(err.Error(), "invalid") ||
+			strings.Contains(err.Error(), "prompt cannot be empty") {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sched, err := s.deps.ScheduleManager.Get(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sched)
+}
+
+func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
+	if s.deps == nil || s.deps.ScheduleManager == nil {
+		writeError(w, http.StatusInternalServerError, "daemon deps not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.deps.ScheduleManager.Remove(id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 // --- Global config + instructions handlers ---
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -975,6 +1527,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	effectiveJSON, _ := json.Marshal(cfg)
 	var effectiveMap map[string]interface{}
 	json.Unmarshal(effectiveJSON, &effectiveMap)
+
+	// Redact secrets from both maps before responding
+	redactConfigSecrets(globalMap)
+	redactConfigSecrets(effectiveMap)
 
 	// Collect unique source files from config merge
 	var sources []string
