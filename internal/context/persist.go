@@ -138,21 +138,25 @@ func BoundedAppend(memoryDir, content string) error {
 
 	// Read existing file under lock
 	existing, _ := os.ReadFile(memoryPath)
-	existingLines := countLines(existing)
-	newLines := strings.Count(content, "\n") + 1
+	// Build the exact content that would be written to MEMORY.md, including
+	// the optional leading newline separator.
+	writeContent := content
+	if len(existing) > 0 && !strings.HasPrefix(content, "\n") {
+		writeContent = "\n" + writeContent
+	}
+
+	projectedLines := countLines(append(append([]byte{}, existing...), []byte(writeContent)...))
 
 	// If appending would exceed the limit, write overflow to a detail file
 	// and add a one-line pointer in MEMORY.md instead.
-	if existingLines+newLines > maxMemoryLines {
+	if projectedLines > maxMemoryLines {
 		detailFile, err := writeDetailFile(memoryDir, content)
 		if err != nil {
 			return fmt.Errorf("write detail file: %w", err)
 		}
 		timestamp := time.Now().Format("2006-01-02")
-		content = fmt.Sprintf("\n- [%s] See [%s](%s) for details\n",
+		writeContent = fmt.Sprintf("\n- [%s] See [%s](%s) for details\n",
 			timestamp, detailFile, detailFile)
-	} else if len(existing) > 0 && !strings.HasPrefix(content, "\n") {
-		content = "\n" + content
 	}
 
 	// Append under lock
@@ -161,7 +165,7 @@ func BoundedAppend(memoryDir, content string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = f.WriteString(content)
+	_, err = f.WriteString(writeContent)
 	return err
 }
 

@@ -174,6 +174,33 @@ func TestBoundedAppend(t *testing.T) {
 		}
 	})
 
+	t.Run("respects boundary when existing memory has trailing newline", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// existing has 149 lines and a trailing newline; without this fix, one extra
+		// non-prefixed line could incorrectly fit the cap.
+		lines := make([]string, maxMemoryLines-1)
+		for i := 0; i < maxMemoryLines-1; i++ {
+			lines[i] = "- line"
+		}
+		existing := strings.Join(lines, "\n") + "\n"
+		os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(existing), 0644)
+
+		err := BoundedAppend(dir, "- new line")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+		content := string(data)
+		if !strings.Contains(content, "auto-") {
+			t.Error("should overflow to detail file when append would exceed cap")
+		}
+		if strings.Contains(content, "new line") {
+			t.Error("overflow content should be in detail file, not MEMORY.md")
+		}
+	})
+
 	t.Run("overflows to detail file at boundary", func(t *testing.T) {
 		dir := t.TempDir()
 
