@@ -294,8 +294,48 @@ func (sc *SessionCache) evictRoute(key string) {
 	}
 }
 
-// CloseAll closes all session managers and clears cache state.
+// CloseAll cancels active routes, closes all session managers, and nils
+// route managers. Route entries stay in the map so in-flight goroutines
+// can still call UnlockRoute without missing the entry.
 func (sc *SessionCache) CloseAll() {
+	sc.mu.Lock()
+
+	// Cancel all active routes first (release sc.mu before per-entry work).
+	var activeKeys []string
+	for key, route := range sc.routes {
+		if route != nil && route.cancel != nil {
+			activeKeys = append(activeKeys, key)
+		}
+	}
+	sc.mu.Unlock()
+
+	// Cancel active routes and wait briefly for their done channels.
+	for _, key := range activeKeys {
+		sc.mu.Lock()
+		route := sc.routes[key]
+		sc.mu.Unlock()
+		if route == nil {
+			continue
+		}
+		route.mu.Lock()
+		cancel := route.cancel
+		done := route.done
+		route.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if done != nil {
+			timer := time.NewTimer(5 * time.Second)
+			select {
+			case <-done:
+			case <-timer.C:
+				log.Printf("daemon: timed out waiting for route %q to stop", key)
+			}
+			timer.Stop()
+		}
+	}
+
+	// Now all runs are stopped — safe to close managers.
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	for sessionsDir, mgr := range sc.managers {
@@ -304,14 +344,20 @@ func (sc *SessionCache) CloseAll() {
 		}
 	}
 	for key, route := range sc.routes {
-		if route != nil && route.manager != nil {
-			if err := route.manager.Close(); err != nil {
-				log.Printf("daemon: failed to close session for route %q: %v", key, err)
+		if route != nil {
+			route.mu.Lock()
+			mgr := route.manager
+			route.manager = nil
+			route.mu.Unlock()
+			if mgr != nil {
+				if err := mgr.Close(); err != nil {
+					log.Printf("daemon: failed to close session for route %q: %v", key, err)
+				}
 			}
 		}
 	}
 	sc.managers = make(map[string]*session.Manager)
-	sc.routes = make(map[string]*routeEntry)
+	// Keep route entries — they are harmless shells and prevent orphaned unlocks.
 }
 
 // SessionsDir returns the sessions directory for the given agent.

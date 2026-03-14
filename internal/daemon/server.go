@@ -978,9 +978,9 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("agent %q not found", name))
 		return
 	}
-	s.deps.SessionCache.Lock(name)
+	// Evict handles its own per-route locking — do NOT wrap with Lock/Unlock
+	// (that would self-deadlock since Evict calls evictRoute which acquires entry.mu).
 	s.deps.SessionCache.Evict(name)
-	s.deps.SessionCache.Unlock(name)
 	if err := agents.DeleteAgentDir(s.deps.AgentsDir, name); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

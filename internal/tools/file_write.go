@@ -39,18 +39,20 @@ func (t *FileWriteTool) Run(ctx context.Context, argsJSON string) (agent.ToolRes
 	}
 	args.Path = ExpandHome(args.Path)
 
+	// Block file_write on the agent's MEMORY.md — always use memory_append.
+	// Check unconditionally (not just for existing files) so first-write
+	// scenarios also go through the flock-protected bounded-append path.
+	if agent.IsMemoryFile(ctx, args.Path) {
+		return agent.ToolResult{
+			Content: "Cannot write MEMORY.md with file_write — use the memory_append tool instead.",
+			IsError: true,
+		}, nil
+	}
+
 	// Enforce read-before-write for existing files (new files are fine)
 	if _, err := os.Stat(args.Path); err == nil {
 		if err := agent.CheckReadBeforeWrite(ctx, args.Path); err != nil {
 			return agent.ToolResult{Content: err.Error(), IsError: true}, nil
-		}
-		// Block file_write on the agent's MEMORY.md — use memory_append instead.
-		// Prevents one session from clobbering another session's memory entries.
-		if agent.IsMemoryFile(ctx, args.Path) {
-			return agent.ToolResult{
-				Content: "Cannot overwrite MEMORY.md with file_write — it destroys entries from other sessions. Use the memory_append tool instead.",
-				IsError: true,
-			}, nil
 		}
 	}
 
