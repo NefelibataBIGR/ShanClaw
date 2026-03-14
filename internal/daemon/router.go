@@ -297,39 +297,35 @@ func (sc *SessionCache) evictRoute(key string) {
 // CloseAll cancels active routes, closes all session managers, and nils
 // route managers. Route entries stay in the map so in-flight goroutines
 // can still call UnlockRoute without missing the entry.
+//
+// cancel/done are snapshot under sc.mu (not entry.mu) to avoid blocking
+// on an in-flight run's held entry.mu. This is safe because cancel() is
+// idempotent and done channels only close once.
 func (sc *SessionCache) CloseAll() {
+	// Snapshot cancel/done for all active routes under sc.mu.
+	type activeRoute struct {
+		key    string
+		cancel context.CancelFunc
+		done   chan struct{}
+	}
 	sc.mu.Lock()
-
-	// Cancel all active routes first (release sc.mu before per-entry work).
-	var activeKeys []string
+	var active []activeRoute
 	for key, route := range sc.routes {
 		if route != nil && route.cancel != nil {
-			activeKeys = append(activeKeys, key)
+			active = append(active, activeRoute{key, route.cancel, route.done})
 		}
 	}
 	sc.mu.Unlock()
 
-	// Cancel active routes and wait briefly for their done channels.
-	for _, key := range activeKeys {
-		sc.mu.Lock()
-		route := sc.routes[key]
-		sc.mu.Unlock()
-		if route == nil {
-			continue
-		}
-		route.mu.Lock()
-		cancel := route.cancel
-		done := route.done
-		route.mu.Unlock()
-		if cancel != nil {
-			cancel()
-		}
-		if done != nil {
+	// Cancel active routes and wait briefly — no entry.mu needed.
+	for _, ar := range active {
+		ar.cancel()
+		if ar.done != nil {
 			timer := time.NewTimer(5 * time.Second)
 			select {
-			case <-done:
+			case <-ar.done:
 			case <-timer.C:
-				log.Printf("daemon: timed out waiting for route %q to stop", key)
+				log.Printf("daemon: timed out waiting for route %q to stop", ar.key)
 			}
 			timer.Stop()
 		}
@@ -344,20 +340,14 @@ func (sc *SessionCache) CloseAll() {
 		}
 	}
 	for key, route := range sc.routes {
-		if route != nil {
-			route.mu.Lock()
-			mgr := route.manager
-			route.manager = nil
-			route.mu.Unlock()
-			if mgr != nil {
-				if err := mgr.Close(); err != nil {
-					log.Printf("daemon: failed to close session for route %q: %v", key, err)
-				}
+		if route != nil && route.manager != nil {
+			if err := route.manager.Close(); err != nil {
+				log.Printf("daemon: failed to close session for route %q: %v", key, err)
 			}
+			route.manager = nil
 		}
 	}
 	sc.managers = make(map[string]*session.Manager)
-	// Keep route entries — they are harmless shells and prevent orphaned unlocks.
 }
 
 // SessionsDir returns the sessions directory for the given agent.
