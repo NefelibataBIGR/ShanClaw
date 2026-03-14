@@ -156,3 +156,77 @@ func TestPersistLearnings(t *testing.T) {
 		}
 	})
 }
+
+func TestBoundedAppend(t *testing.T) {
+	t.Run("appends content directly when under limit", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte("- existing\n"), 0644)
+
+		err := BoundedAppend(dir, "- new entry")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+		content := string(data)
+		if !strings.Contains(content, "existing") || !strings.Contains(content, "new entry") {
+			t.Error("should contain both existing and new content")
+		}
+	})
+
+	t.Run("overflows to detail file at boundary", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Fill MEMORY.md to just under the limit
+		var lines []string
+		for i := 0; i < maxMemoryLines-1; i++ {
+			lines = append(lines, "- line")
+		}
+		os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(strings.Join(lines, "\n")), 0644)
+
+		// This 3-line append should overflow
+		err := BoundedAppend(dir, "- new1\n- new2\n- new3")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+		content := string(data)
+		if !strings.Contains(content, "auto-") {
+			t.Error("should contain pointer to detail file")
+		}
+		if strings.Contains(content, "new1") {
+			t.Error("overflow content should be in detail file, not MEMORY.md")
+		}
+
+		// Detail file should exist with the content
+		entries, _ := os.ReadDir(dir)
+		found := false
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "auto-") {
+				found = true
+				detail, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+				if !strings.Contains(string(detail), "new1") {
+					t.Error("detail file should contain overflow content")
+				}
+			}
+		}
+		if !found {
+			t.Error("should have created a detail file")
+		}
+	})
+
+	t.Run("creates MEMORY.md if missing", func(t *testing.T) {
+		dir := t.TempDir()
+
+		err := BoundedAppend(dir, "- first entry")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+		if !strings.Contains(string(data), "first entry") {
+			t.Error("should create file with content")
+		}
+	})
+}

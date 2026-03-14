@@ -114,16 +114,30 @@ const MaxMemoryLines = maxMemoryLines
 // BoundedAppend appends content to MEMORY.md in memoryDir, respecting the
 // line limit. If appending would exceed maxMemoryLines, content is written
 // to a timestamped detail file and a one-line pointer is added to MEMORY.md.
-// All writes are flock-protected. Both PersistLearnings and memory_append
-// use this function to ensure consistent bounded-append behavior.
+// Read, decide, and write all happen under a single flock so concurrent
+// callers cannot both pass the line-count check simultaneously.
 func BoundedAppend(memoryDir, content string) error {
 	if err := os.MkdirAll(memoryDir, 0755); err != nil {
 		return fmt.Errorf("create memory dir: %w", err)
 	}
 
 	memoryPath := filepath.Join(memoryDir, "MEMORY.md")
-	existing, _ := os.ReadFile(memoryPath)
+	lockPath := memoryPath + ".lock"
 
+	// Acquire exclusive lock — hold for the entire read+decide+write cycle.
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("open lock: %w", err)
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("flock: %w", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	// Read existing file under lock
+	existing, _ := os.ReadFile(memoryPath)
 	existingLines := countLines(existing)
 	newLines := strings.Count(content, "\n") + 1
 
@@ -135,16 +149,20 @@ func BoundedAppend(memoryDir, content string) error {
 			return fmt.Errorf("write detail file: %w", err)
 		}
 		timestamp := time.Now().Format("2006-01-02")
-		entry := fmt.Sprintf("\n- [%s] See [%s](%s) for details\n",
+		content = fmt.Sprintf("\n- [%s] See [%s](%s) for details\n",
 			timestamp, detailFile, detailFile)
-		return appendToFile(memoryPath, entry)
-	}
-
-	// Ensure content starts on a new line
-	if len(existing) > 0 && !strings.HasPrefix(content, "\n") {
+	} else if len(existing) > 0 && !strings.HasPrefix(content, "\n") {
 		content = "\n" + content
 	}
-	return appendToFile(memoryPath, content)
+
+	// Append under lock
+	f, err := os.OpenFile(memoryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(content)
+	return err
 }
 
 // writeDetailFile creates a timestamped detail file in memoryDir and returns
@@ -163,31 +181,6 @@ func writeDetailFile(memoryDir, content string) (string, error) {
 		return "", err
 	}
 	return filename, nil
-}
-
-// appendToFile appends content to a file under an exclusive flock,
-// creating the file if needed. The lock file (<path>.lock) is persistent
-// and must not be deleted (same lock used by memory_append tool).
-func appendToFile(path, content string) error {
-	lockPath := path + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return fmt.Errorf("open lock: %w", err)
-	}
-	defer lockFile.Close()
-
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("flock: %w", err)
-	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
-
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.WriteString(content)
-	return err
 }
 
 // countLines counts the number of lines in content.
