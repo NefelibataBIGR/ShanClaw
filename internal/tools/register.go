@@ -78,8 +78,45 @@ func RegisterLocalTools(cfg *config.Config) (*agent.ToolRegistry, *[]*skills.Ski
 	return reg, skillsPtr, cleanup
 }
 
+// gatewayAllowedTools is the allowlist of server-side tools worth registering
+// locally. Cloud-only tools (python_executor, calculator, etc.) are excluded
+// to prevent the LLM from choosing them over better local equivalents.
+// All cloud tools remain available via cloud_delegate.
+var gatewayAllowedTools = map[string]bool{
+	// Research
+	"web_search":        true,
+	"web_fetch":         true,
+	"web_subpage_fetch": true,
+	"web_crawl":         true,
+	// Financial
+	"getStockBars":      true,
+	"alpaca_news":       true,
+	"sec_filings":       true,
+	"news_aggregator":   true,
+	"twitter_sentiment": true,
+	// Ads/Enterprise
+	"ads_serp_extract":        true,
+	"ads_transparency_search": true,
+	"ads_competitor_discover": true,
+	"lp_visual_analyze":       true,
+	"lp_batch_analyze":        true,
+	"ads_creative_analyze":    true,
+	"yahoo_jp_ads_discover":   true,
+	"meta_ad_library_search":  true,
+	// Analytics
+	"ga4_run_report":          true,
+	"ga4_run_realtime_report": true,
+	"ga4_get_metadata":        true,
+	// Visual
+	"page_screenshot": true,
+	// Browser
+	"browser": true,
+}
+
 // RegisterServerTools fetches server-side tools from the gateway and appends
-// entries to the provided registry. Local tools always keep priority.
+// entries to the provided registry. Only allowlisted tools are registered;
+// others are skipped (still available via cloud_delegate). Local tools always
+// keep priority.
 func RegisterServerTools(ctx context.Context, gw *client.GatewayClient, reg *agent.ToolRegistry) error {
 	if reg == nil {
 		return fmt.Errorf("tool registry is nil")
@@ -93,6 +130,9 @@ func RegisterServerTools(ctx context.Context, gw *client.GatewayClient, reg *age
 	for _, schema := range schemas {
 		if _, exists := reg.Get(schema.Name); exists {
 			continue // local tool takes priority
+		}
+		if !gatewayAllowedTools[schema.Name] {
+			continue // not allowlisted; available via cloud_delegate
 		}
 		reg.Register(NewServerTool(schema, gw))
 	}

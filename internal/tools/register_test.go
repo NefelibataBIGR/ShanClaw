@@ -118,3 +118,41 @@ func TestRegisterAll_LocalPriority(t *testing.T) {
 		t.Errorf("expected 26 tools, got %d", len(schemas))
 	}
 }
+
+func TestRegisterServerTools_AllowlistFiltering(t *testing.T) {
+	serverTools := []client.ServerToolSchema{
+		{Name: "web_search", Description: "Search the web"},
+		{Name: "python_executor", Description: "Run Python in sandbox"},
+		{Name: "calculator", Description: "Basic calculator"},
+		{Name: "getStockBars", Description: "Get stock price bars"},
+		{Name: "session_file_write", Description: "Write session file"},
+		{Name: "some_future_tool", Description: "Unknown new tool"},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(serverTools)
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg, _, cleanup, err := RegisterAll(gw, nil)
+	defer cleanup()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Allowlisted tools should be registered
+	for _, name := range []string{"web_search", "getStockBars"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("allowlisted tool %q should be registered", name)
+		}
+	}
+
+	// Non-allowlisted tools should be filtered out
+	for _, name := range []string{"python_executor", "calculator", "session_file_write", "some_future_tool"} {
+		if _, ok := reg.Get(name); ok {
+			t.Errorf("non-allowlisted tool %q should NOT be registered", name)
+		}
+	}
+}

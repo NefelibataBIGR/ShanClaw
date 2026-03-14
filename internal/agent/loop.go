@@ -137,6 +137,7 @@ ALWAYS CLOUD (delegate):
 - Parallel independent subtasks (3+ that don't share state)
 - Web scraping / data collection at scale
 - Long analysis requiring multiple LLM reasoning steps
+- Tasks needing cloud-only tools (Python sandbox, calculators, data diffing) — these are NOT available locally but the cloud agent has them
 
 PREFER LOCAL (delegate only if struggling):
 - Single web search -> local http tool first
