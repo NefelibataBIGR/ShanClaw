@@ -407,6 +407,86 @@ func TestConsolidateMemory_LLMReturnsNONE(t *testing.T) {
 	}
 }
 
+func TestConsolidateMemory_UnreadableFileConsumed(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte("- user fact\n"), 0644)
+
+	// 11 readable auto files + 1 unreadable = 12 total (meets threshold)
+	for i := 0; i < 11; i++ {
+		name := fmt.Sprintf("auto-2026-03-%02d-%06x.md", i+1, i)
+		os.WriteFile(filepath.Join(dir, name), []byte(fmt.Sprintf("- fact %d\n", i)), 0644)
+	}
+	// Create an unreadable file (directory with .md name — can't ReadFile a dir)
+	unreadable := filepath.Join(dir, "auto-2026-03-12-ffffff.md")
+	os.Mkdir(unreadable, 0755)
+
+	// Set marker to 8 days ago
+	markerPath := filepath.Join(dir, ".memory_gc")
+	os.WriteFile(markerPath, []byte(""), 0644)
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+	os.Chtimes(markerPath, oldTime, oldTime)
+
+	mock := &mockCompleter{
+		response: &client.CompletionResponse{OutputText: "- consolidated fact"},
+	}
+
+	err := ConsolidateMemory(context.Background(), mock, dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The unreadable "file" (dir) should have been removed so threshold drops
+	remaining, _ := filepath.Glob(filepath.Join(dir, "auto-*.md"))
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 auto files remaining (including unreadable), got %d", len(remaining))
+	}
+
+	// Consolidation should have produced output from the 11 readable files
+	data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+	if !strings.Contains(string(data), "consolidated fact") {
+		t.Error("should contain consolidated output from readable files")
+	}
+}
+
+func TestConsolidateMemory_MarkerWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte("- user fact\n"), 0644)
+
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("auto-2026-03-%02d-%06x.md", i+1, i)
+		os.WriteFile(filepath.Join(dir, name), []byte(fmt.Sprintf("- fact %d\n", i)), 0644)
+	}
+
+	// Set old marker so cooldown passes
+	markerPath := filepath.Join(dir, ".memory_gc")
+	os.WriteFile(markerPath, []byte(""), 0644)
+	oldTime := time.Now().Add(-8 * 24 * time.Hour)
+	os.Chtimes(markerPath, oldTime, oldTime)
+
+	// Make marker path a directory so WriteFile fails
+	os.Remove(markerPath)
+	os.Mkdir(markerPath, 0755)
+	os.Chtimes(markerPath, oldTime, oldTime) // must be old so cooldown passes
+
+	mock := &mockCompleter{
+		response: &client.CompletionResponse{OutputText: "- consolidated"},
+	}
+
+	err := ConsolidateMemory(context.Background(), mock, dir)
+	if err == nil {
+		t.Fatal("expected error when marker write fails")
+	}
+	if !strings.Contains(err.Error(), "write marker") {
+		t.Errorf("error should mention marker write, got: %v", err)
+	}
+
+	// MEMORY.md should still be updated (consolidation succeeded, only marker failed)
+	data, _ := os.ReadFile(filepath.Join(dir, "MEMORY.md"))
+	if !strings.Contains(string(data), "consolidated") {
+		t.Error("MEMORY.md should still contain consolidated content despite marker failure")
+	}
+}
+
 func TestSplitMemory(t *testing.T) {
 	input := "- user fact 1\n- user fact 2\n\n" +
 		"## Auto-persisted (2026-03-01 10:00)\n\n- auto fact 1\n- auto fact 2\n\n" +

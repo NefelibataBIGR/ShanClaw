@@ -269,6 +269,9 @@ func ConsolidateMemory(ctx context.Context, c Completer, memoryDir string) error
 	for _, f := range autoFiles {
 		data, readErr := os.ReadFile(f)
 		if readErr != nil {
+			// Still mark as consumed — if a file is permanently unreadable,
+			// leaving it blocks future consolidations from making progress.
+			consumedFiles = append(consumedFiles, f)
 			continue
 		}
 		consumedFiles = append(consumedFiles, f)
@@ -330,8 +333,11 @@ func ConsolidateMemory(ctx context.Context, c Completer, memoryDir string) error
 		os.Remove(f)
 	}
 
-	// Touch marker
-	os.WriteFile(markerPath, []byte(time.Now().Format(time.RFC3339)), 0644) //nolint:errcheck
+	// Touch marker — failure here means consolidation would re-trigger next run,
+	// wasting an LLM call. Return the error so callers can log it.
+	if err := os.WriteFile(markerPath, []byte(time.Now().Format(time.RFC3339)), 0644); err != nil {
+		return fmt.Errorf("consolidate: write marker: %w", err)
+	}
 
 	return nil
 }
@@ -355,8 +361,9 @@ func splitMemory(content string) (userContent, autoContent string) {
 			continue
 		}
 
-		// Detect auto-*.md pointer lines anywhere
-		if strings.Contains(trimmed, "See [auto-") && strings.Contains(trimmed, ".md]") {
+		// Detect auto-*.md pointer lines — only match the exact format
+		// produced by BoundedAppend: "- [date] See [auto-YYYY-MM-DD-hex.md](...) for details"
+		if strings.HasPrefix(trimmed, "- [") && strings.Contains(trimmed, "See [auto-") && strings.HasSuffix(trimmed, "for details") {
 			auto = append(auto, line)
 			continue
 		}
