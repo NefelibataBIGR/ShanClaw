@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadAgent_ReadsAgentAndMemory(t *testing.T) {
@@ -118,5 +120,73 @@ func TestParseAgentMention(t *testing.T) {
 			t.Errorf("ParseAgentMention(%q) = (%q, %q), want (%q, %q)",
 				tt.input, agent, msg, tt.wantAgent, tt.wantMsg)
 		}
+	}
+}
+
+func TestAgentConfig_ParseWatch(t *testing.T) {
+	raw := `
+watch:
+  - path: ~/Code
+    glob: "*.go"
+  - path: ~/Downloads
+`
+	var cfg AgentConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Watch) != 2 {
+		t.Fatalf("expected 2 watch entries, got %d", len(cfg.Watch))
+	}
+	if cfg.Watch[0].Path != "~/Code" {
+		t.Errorf("expected ~/Code, got %s", cfg.Watch[0].Path)
+	}
+	if cfg.Watch[0].Glob != "*.go" {
+		t.Errorf("expected *.go, got %s", cfg.Watch[0].Glob)
+	}
+	if cfg.Watch[1].Glob != "" {
+		t.Errorf("expected empty glob, got %s", cfg.Watch[1].Glob)
+	}
+}
+
+func TestAgentConfig_ParseHeartbeat(t *testing.T) {
+	raw := `
+heartbeat:
+  every: 30m
+  active_hours: "09:00-22:00"
+  model: small
+  isolated_session: true
+`
+	var cfg AgentConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Heartbeat == nil {
+		t.Fatal("expected heartbeat config")
+	}
+	if cfg.Heartbeat.Every != "30m" {
+		t.Errorf("expected 30m, got %s", cfg.Heartbeat.Every)
+	}
+	if cfg.Heartbeat.ActiveHours != "09:00-22:00" {
+		t.Errorf("expected 09:00-22:00, got %s", cfg.Heartbeat.ActiveHours)
+	}
+	if cfg.Heartbeat.Model != "small" {
+		t.Errorf("expected small, got %s", cfg.Heartbeat.Model)
+	}
+	if !cfg.Heartbeat.IsIsolatedSession() {
+		t.Error("expected isolated_session true")
+	}
+}
+
+func TestHeartbeatConfig_DefaultIsolatedSession(t *testing.T) {
+	raw := `
+heartbeat:
+  every: 30m
+`
+	var cfg AgentConfig
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Heartbeat.IsIsolatedSession() {
+		t.Error("expected default isolated_session to be true (nil pointer)")
 	}
 }

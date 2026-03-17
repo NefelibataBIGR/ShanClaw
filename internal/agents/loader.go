@@ -48,12 +48,37 @@ type AgentMCPServerRef struct {
 	Context  string            `yaml:"context,omitempty" json:"context,omitempty"`
 }
 
+// WatchEntry defines a single file system watch path for an agent.
+type WatchEntry struct {
+	Path string `yaml:"path" json:"path"`
+	Glob string `yaml:"glob,omitempty" json:"glob,omitempty"`
+}
+
+// HeartbeatConfig configures periodic heartbeat checks for an agent.
+// IsolatedSession defaults to true (nil = true). Use pointer for YAML omit-means-default.
+type HeartbeatConfig struct {
+	Every           string `yaml:"every" json:"every"`
+	ActiveHours     string `yaml:"active_hours,omitempty" json:"active_hours,omitempty"`
+	Model           string `yaml:"model,omitempty" json:"model,omitempty"`
+	IsolatedSession *bool  `yaml:"isolated_session,omitempty" json:"isolated_session,omitempty"`
+}
+
+// IsIsolatedSession returns the effective value (default true).
+func (h *HeartbeatConfig) IsIsolatedSession() bool {
+	if h.IsolatedSession == nil {
+		return true
+	}
+	return *h.IsolatedSession
+}
+
 // AgentConfig is the per-agent config overlay loaded from config.yaml.
 type AgentConfig struct {
 	MCPServers  *AgentMCPConfig   `yaml:"-"` // parsed manually for _inherit
 	Tools       *AgentToolsFilter `yaml:"tools"`
 	Agent       *AgentModelConfig `yaml:"agent"`
 	AutoApprove *bool             `yaml:"auto_approve"`
+	Watch       []WatchEntry      `yaml:"watch,omitempty"`
+	Heartbeat   *HeartbeatConfig  `yaml:"heartbeat,omitempty"`
 }
 
 // AgentModelConfig holds per-agent model/iteration overrides.
