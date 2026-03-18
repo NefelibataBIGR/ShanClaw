@@ -203,18 +203,18 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Notify Cloud and emit event BEFORE unblocking the agent.
-	// This ensures Ptfrog dismisses the approval card before seeing the agent reply.
+	// This ensures ShanClaw dismisses the approval card before seeing the agent reply.
 	_ = s.notifyApprovalResolved(ApprovalResolvedPayload{
 		RequestID:  req.RequestID,
 		Decision:   req.Decision,
-		ResolvedBy: "ptfrog",
+		ResolvedBy: "shanclaw",
 	})
 
 	if s.eventBus != nil {
 		payload, _ := json.Marshal(map[string]string{
 			"request_id":  req.RequestID,
 			"decision":    string(req.Decision),
-			"resolved_by": "ptfrog",
+			"resolved_by": "shanclaw",
 		})
 		s.eventBus.Emit(Event{Type: EventApprovalResolved, Payload: payload})
 	}
@@ -437,7 +437,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Source == "" {
-		req.Source = "ptfrog"
+		req.Source = "shanclaw"
 	}
 	req.EnsureRouteKey()
 	if err := req.Validate(); err != nil {

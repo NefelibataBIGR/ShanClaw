@@ -71,8 +71,8 @@ func TestE2E_RouteKeyComputation(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "ptfrog with session_id",
-			req:      RunAgentRequest{Text: "hi", Source: "ptfrog", SessionID: "sess-xyz"},
+			name:     "shanclaw with session_id",
+			req:      RunAgentRequest{Text: "hi", Source: "shanclaw", SessionID: "sess-xyz"},
 			expected: "session:sess-xyz",
 		},
 	}
@@ -213,7 +213,7 @@ func TestE2E_InjectEndpoint_HTTP(t *testing.T) {
 	go srv.Start(srvCtx)
 	time.Sleep(100 * time.Millisecond)
 
-	body := strings.NewReader(`{"text":"follow up question","session_id":"sess-123","source":"ptfrog"}`)
+	body := strings.NewReader(`{"text":"follow up question","session_id":"sess-123","source":"shanclaw"}`)
 	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/message", srv.Port()), "application/json", body)
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestE2E_InjectEndpoint_QueueFull_Returns429(t *testing.T) {
 	go srv.Start(srvCtx)
 	time.Sleep(100 * time.Millisecond)
 
-	body := strings.NewReader(`{"text":"second message","session_id":"sess-456","source":"ptfrog"}`)
+	body := strings.NewReader(`{"text":"second message","session_id":"sess-456","source":"shanclaw"}`)
 	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/message", srv.Port()), "application/json", body)
 	if err != nil {
 		t.Fatal(err)

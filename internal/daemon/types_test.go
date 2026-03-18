@@ -81,7 +81,7 @@ func TestApprovalResolvedPayload_Serialization(t *testing.T) {
 	p := ApprovalResolvedPayload{
 		RequestID:  "apr_abc123",
 		Decision:   DecisionAllow,
-		ResolvedBy: "ptfrog",
+		ResolvedBy: "shanclaw",
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -97,8 +97,8 @@ func TestApprovalResolvedPayload_Serialization(t *testing.T) {
 	if decoded.Decision != DecisionAllow {
 		t.Errorf("decision = %q, want %q", decoded.Decision, DecisionAllow)
 	}
-	if decoded.ResolvedBy != "ptfrog" {
-		t.Errorf("resolved_by = %q, want %q", decoded.ResolvedBy, "ptfrog")
+	if decoded.ResolvedBy != "shanclaw" {
+		t.Errorf("resolved_by = %q, want %q", decoded.ResolvedBy, "shanclaw")
 	}
 }
 

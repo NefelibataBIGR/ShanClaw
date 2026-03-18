@@ -15,7 +15,7 @@ import (
 // MessageMeta holds per-message metadata not sent to the LLM gateway.
 // Indexed parallel to Session.Messages.
 type MessageMeta struct {
-	Source    string `json:"source,omitempty"`     // "slack", "line", "ptfrog", "webhook"
+	Source    string `json:"source,omitempty"`     // "slack", "line", "shanclaw", "webhook"
 	MessageID string `json:"message_id,omitempty"` // stable ID for dedup (e.g. "msg-<uuid>")
 }
 
@@ -28,7 +28,7 @@ type Session struct {
 	Messages    []client.Message `json:"messages"`
 	RemoteTasks []string         `json:"remote_tasks,omitempty"`
 	MessageMeta []MessageMeta    `json:"message_meta,omitempty"`
-	Source      string           `json:"source,omitempty"`  // "slack", "line", "ptfrog", "webhook"
+	Source      string           `json:"source,omitempty"`  // "slack", "line", "shanclaw", "webhook"
 	Channel     string           `json:"channel,omitempty"` // source channel/group identifier
 }
 

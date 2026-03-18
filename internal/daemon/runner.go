@@ -30,7 +30,7 @@ type RunAgentRequest struct {
 	Agent      string `json:"agent,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	NewSession bool   `json:"new_session,omitempty"`
-	Source     string `json:"source,omitempty"`    // "slack", "line", "ptfrog", "webhook"
+	Source     string `json:"source,omitempty"`    // "slack", "line", "shanclaw", "webhook"
 	Sender     string `json:"sender,omitempty"`    // user identifier from channel
 	Channel    string `json:"channel,omitempty"`   // channel/thread source context
 	ThreadID   string `json:"thread_id,omitempty"` // thread context for messaging platforms
@@ -204,6 +204,18 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 			prompt = req.Text
 		} else {
 			agentOverride = a
+		}
+	}
+	// Resolve agent-scoped slash command: "/cmd-name args" → command content.
+	if agentOverride != nil && strings.HasPrefix(prompt, "/") {
+		parts := strings.Fields(prompt)
+		cmdName := strings.TrimPrefix(parts[0], "/")
+		if content, ok := agentOverride.Commands[cmdName]; ok {
+			args := ""
+			if len(parts) > 1 {
+				args = strings.Join(parts[1:], " ")
+			}
+			prompt = strings.ReplaceAll(content, "$ARGUMENTS", args)
 		}
 	}
 	req.Text = prompt
