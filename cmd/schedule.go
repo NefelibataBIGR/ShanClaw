@@ -13,12 +13,7 @@ import (
 
 func newScheduleManager() *schedule.Manager {
 	dir := config.ShannonDir()
-	home, _ := os.UserHomeDir()
-	plistDir := filepath.Join(home, "Library", "LaunchAgents")
-	return schedule.NewManager(
-		filepath.Join(dir, "schedules.json"),
-		plistDir,
-	)
+	return schedule.NewManager(filepath.Join(dir, "schedules.json"))
 }
 
 var scheduleCmd = &cobra.Command{
@@ -153,20 +148,6 @@ var scheduleDisableCmd = &cobra.Command{
 	},
 }
 
-var scheduleSyncCmd = &cobra.Command{
-	Use:   "sync",
-	Short: "Re-sync failed/pending launchd plists",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := newScheduleManager()
-		n, err := mgr.Sync()
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Synced %d schedule(s)\n", n)
-		return nil
-	},
-}
-
 func init() {
 	scheduleCreateCmd.Flags().StringVar(&schedCreateAgent, "agent", "", "Agent to run (empty for default)")
 	scheduleCreateCmd.Flags().StringVar(&schedCreateCron, "cron", "", "Cron expression (5-field, supports ranges/steps/lists)")
@@ -181,6 +162,5 @@ func init() {
 	scheduleCmd.AddCommand(scheduleRemoveCmd)
 	scheduleCmd.AddCommand(scheduleEnableCmd)
 	scheduleCmd.AddCommand(scheduleDisableCmd)
-	scheduleCmd.AddCommand(scheduleSyncCmd)
 	rootCmd.AddCommand(scheduleCmd)
 }

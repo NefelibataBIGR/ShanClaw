@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -61,12 +60,7 @@ func RegisterLocalTools(cfg *config.Config) (*agent.ToolRegistry, *[]*skills.Ski
 
 	// Schedule tools
 	if shanDir := config.ShannonDir(); shanDir != "" {
-		home, _ := os.UserHomeDir()
-		plistDir := filepath.Join(home, "Library", "LaunchAgents")
-		schMgr := schedule.NewManager(
-			filepath.Join(shanDir, "schedules.json"),
-			plistDir,
-		)
+		schMgr := schedule.NewManager(filepath.Join(shanDir, "schedules.json"))
 		for _, tool := range NewScheduleTools(schMgr) {
 			reg.Register(tool)
 		}

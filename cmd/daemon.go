@@ -90,9 +90,7 @@ var daemonStartCmd = &cobra.Command{
 		wsEndpoint := strings.Replace(cfg.Endpoint, "https://", "wss://", 1)
 		wsEndpoint = strings.Replace(wsEndpoint, "http://", "ws://", 1)
 		wsEndpoint += "/v1/ws/messages"
-		home, _ := os.UserHomeDir()
-		plistDir := filepath.Join(home, "Library", "LaunchAgents")
-		scheduleManager := schedule.NewManager(filepath.Join(shanDir, "schedules.json"), plistDir)
+		scheduleManager := schedule.NewManager(filepath.Join(shanDir, "schedules.json"))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

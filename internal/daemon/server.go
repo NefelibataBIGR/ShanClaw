@@ -733,15 +733,6 @@ func modeForSubresource(subdir string) os.FileMode {
 	}
 }
 
-func isScheduleCreateSyncError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.HasPrefix(msg, "schedule created but plist write failed:") ||
-		strings.HasPrefix(msg, "schedule created but launchctl load failed:")
-}
-
 // configKeyAliases maps known camelCase/PascalCase JSON field names that legacy
 // clients may send back to their canonical snake_case YAML equivalents.
 var configKeyAliases = map[string]string{
@@ -1653,18 +1644,14 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.deps.ScheduleManager.Create(req.Agent, req.Cron, req.Prompt)
 	if err != nil {
-		if isScheduleCreateSyncError(err) {
-			// treat as success; sync status already persisted as failed
-		} else if strings.Contains(err.Error(), "not found") {
+		if strings.Contains(err.Error(), "not found") {
 			writeError(w, http.StatusNotFound, err.Error())
-			return
 		} else if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "prompt cannot be empty") {
 			writeError(w, http.StatusBadRequest, err.Error())
-			return
 		} else {
 			writeError(w, http.StatusInternalServerError, err.Error())
-			return
 		}
+		return
 	}
 	sched, err := s.deps.ScheduleManager.Get(id)
 	if err != nil {
