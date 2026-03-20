@@ -13,6 +13,7 @@ import (
 var ToolFamilies = map[string]string{
 	"web_search":    "web",
 	"web_fetch":     "web",
+	"browser":       "web",
 	"accessibility": "gui",
 	"screenshot":    "gui",
 	"computer":      "gui",

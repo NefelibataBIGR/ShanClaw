@@ -701,3 +701,30 @@ func TestLoopDetector_SearchEscalation_MixedSearchTools(t *testing.T) {
 		t.Error("nudge should have a message")
 	}
 }
+
+func TestLoopDetector_BrowserFamilyNoProgress(t *testing.T) {
+	ld := NewLoopDetector()
+
+	// Simulate 3 browser calls with the same URL (same topic hash) but different
+	// extra fields to produce different ArgsHash and avoid ConsecutiveDup detector.
+	ld.Record("browser", `{"action":"navigate","url":"https://jd.com/search?q=huawei","wait":1}`, false, "", "")
+	ld.Record("browser", `{"action":"navigate","url":"https://jd.com/search?q=huawei","wait":2}`, false, "", "")
+	ld.Record("browser", `{"action":"navigate","url":"https://jd.com/search?q=huawei","wait":3}`, false, "", "")
+	action, msg := ld.Check("browser")
+	if action != LoopNudge {
+		t.Errorf("3 same-topic browser calls should nudge, got %v", action)
+	}
+	if !strings.Contains(msg, "same topic") {
+		t.Errorf("expected 'same topic' in message, got: %s", msg)
+	}
+}
+
+func TestBrowserInToolFamilies(t *testing.T) {
+	family, ok := ToolFamilies["browser"]
+	if !ok {
+		t.Fatal("browser should be in ToolFamilies")
+	}
+	if family != "web" {
+		t.Errorf("browser family should be 'web', got %q", family)
+	}
+}

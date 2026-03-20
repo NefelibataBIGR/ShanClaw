@@ -43,3 +43,10 @@ func TestNormalizeJSON_InvalidJSONFallsBackToTrimmedRaw(t *testing.T) {
 	}
 }
 
+func TestNormalizeWebQuery_BrowserURL(t *testing.T) {
+	result := normalizeWebQuery(`{"action":"navigate","url":"https://jd.com/search?q=huawei"}`)
+	if result == "" {
+		t.Error("normalizeWebQuery should extract URL from browser args")
+	}
+}
+
