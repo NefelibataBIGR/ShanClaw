@@ -979,6 +979,11 @@ func (m *Model) runAgentLoop(query string, history []client.Message) tea.Cmd {
 			}
 		}
 
+		if sess := m.sessions.Current(); sess != nil {
+			m.agentLoop.SetSessionID(sess.ID)
+		} else {
+			m.agentLoop.SetSessionID("")
+		}
 		result, usage, err := m.agentLoop.Run(ctx, query, history)
 		if result != "" && (err == nil || errors.Is(err, agent.ErrMaxIterReached)) {
 			sess := m.sessions.Current()
