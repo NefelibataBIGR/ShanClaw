@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -467,8 +468,24 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	loop.SetSessionID(sess.ID)
 
 	result, usage, runErr := loop.Run(ctx, prompt, history)
-	if runErr != nil {
+	if runErr != nil && !errors.Is(runErr, agent.ErrMaxIterReached) {
+		// Hard error — save a synthetic error message so the session isn't
+		// left with a dangling user message and no assistant reply.
+		if !req.Ephemeral && result == "" {
+			sess.Messages = append(sess.Messages,
+				client.Message{Role: "assistant", Content: client.NewTextContent("[error: agent failed to respond]")},
+			)
+			sess.MessageMeta = append(sess.MessageMeta,
+				session.MessageMeta{Source: req.Source, Timestamp: session.TimePtr(time.Now())},
+			)
+			if err := sessMgr.Save(); err != nil {
+				log.Printf("daemon: failed to save error session: %v", err)
+			}
+		}
 		return nil, fmt.Errorf("agent error for %s: %w", agentName, runErr)
+	}
+	if errors.Is(runErr, agent.ErrMaxIterReached) {
+		log.Printf("daemon: agent %s hit iteration limit, saving partial result", agentName)
 	}
 
 	// Ephemeral requests skip post-run persistence — the caller owns session lifecycle.

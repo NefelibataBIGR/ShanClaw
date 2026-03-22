@@ -4,8 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"sync"
+	"time"
 )
+
+// ApprovalTimeout is the maximum time to wait for an approval response.
+// After this, the tool call is denied and the agent loop continues.
+const ApprovalTimeout = 5 * time.Minute
 
 // ApprovalDecision represents the user's response to a tool approval request.
 type ApprovalDecision string
@@ -91,6 +97,9 @@ func (b *ApprovalBroker) Request(ctx context.Context, channel, threadID, agent, 
 	select {
 	case decision := <-ch:
 		return decision
+	case <-time.After(ApprovalTimeout):
+		log.Printf("daemon: approval timeout for %s (tool=%s), denying", reqID, tool)
+		return DecisionDeny
 	case <-ctx.Done():
 		return DecisionDeny
 	}

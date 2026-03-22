@@ -37,12 +37,16 @@ func (t *AppleScriptTool) Run(ctx context.Context, argsJSON string) (agent.ToolR
 		return agent.ToolResult{Content: fmt.Sprintf("invalid arguments: %v", err), IsError: true}, nil
 	}
 
+	// Apply a default timeout to prevent hangs (e.g., osascript waiting for user interaction).
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	// Split multi-line scripts into separate -e arguments for osascript
 	cmdArgs := []string{}
 	for _, line := range splitScriptLines(args.Script) {
 		cmdArgs = append(cmdArgs, "-e", line)
 	}
-	cmd := exec.CommandContext(ctx, "osascript", cmdArgs...)
+	cmd := exec.CommandContext(execCtx, "osascript", cmdArgs...)
 	output, err := cmd.CombinedOutput()
 
 	result := string(output)

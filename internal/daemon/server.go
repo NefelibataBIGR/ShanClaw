@@ -20,6 +20,7 @@ import (
 	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 	"github.com/Kocoro-lab/ShanClaw/internal/agents"
 	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/permissions"
 	"github.com/Kocoro-lab/ShanClaw/internal/schedule"
 	"github.com/Kocoro-lab/ShanClaw/internal/session"
 	"github.com/Kocoro-lab/ShanClaw/internal/skills"
@@ -542,7 +543,7 @@ func (s *Server) handleMessageSSE(w http.ResponseWriter, r *http.Request, req Ru
 		}
 	}
 
-	handler := &sseEventHandler{w: w, flusher: flusher, broker: reqBroker, ctx: r.Context(), autoApprove: autoApprove}
+	handler := &sseEventHandler{w: w, flusher: flusher, broker: reqBroker, ctx: r.Context(), autoApprove: autoApprove, deps: s.deps}
 	result, err := RunAgent(r.Context(), s.deps, req, handler)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{"error": err.Error()}))
@@ -614,6 +615,7 @@ type sseEventHandler struct {
 	broker      *ApprovalBroker
 	ctx         context.Context
 	autoApprove bool
+	deps        *ServerDeps
 }
 
 func (h *sseEventHandler) OnToolCall(name string, args string) {
@@ -648,7 +650,7 @@ func (h *sseEventHandler) OnCloudAgent(agentID, status, message string) {
 		"status":   status,
 		"message":  message,
 	})
-	fmt.Fprintf(h.w, "event: cloud_agent\ndata: %s\n\n", data)
+	fmt.Fprintf(h.w, "event: %s\ndata: %s\n\n", EventCloudAgent, data)
 	h.flusher.Flush()
 }
 
@@ -657,7 +659,7 @@ func (h *sseEventHandler) OnCloudProgress(completed, total int) {
 		"completed": completed,
 		"total":     total,
 	})
-	fmt.Fprintf(h.w, "event: cloud_progress\ndata: %s\n\n", data)
+	fmt.Fprintf(h.w, "event: %s\ndata: %s\n\n", EventCloudProgress, data)
 	h.flusher.Flush()
 }
 
@@ -667,7 +669,7 @@ func (h *sseEventHandler) OnCloudPlan(planType, content string, needsReview bool
 		"content":      content,
 		"needs_review": needsReview,
 	})
-	fmt.Fprintf(h.w, "event: cloud_plan\ndata: %s\n\n", data)
+	fmt.Fprintf(h.w, "event: %s\ndata: %s\n\n", EventCloudPlan, data)
 	h.flusher.Flush()
 }
 
@@ -680,7 +682,32 @@ func (h *sseEventHandler) OnApprovalNeeded(tool string, args string) bool {
 	}
 	decision := h.broker.Request(h.ctx, "", "", "", tool, args)
 	if decision == DecisionAlwaysAllow {
-		h.broker.SetToolAutoApprove(tool)
+		if tool == "bash" {
+			cmd := permissions.ExtractField(args, "command")
+			if cmd != "" {
+				if err := config.AppendAllowedCommand(h.deps.ShannonDir, cmd); err != nil {
+					log.Printf("sse: failed to persist always-allow: %v", err)
+				} else {
+					h.deps.WriteLock()
+					perms := &h.deps.Config.Permissions
+					found := false
+					for _, c := range perms.AllowedCommands {
+						if c == cmd {
+							found = true
+							break
+						}
+					}
+					if !found {
+						perms.AllowedCommands = append(perms.AllowedCommands, cmd)
+					}
+					h.deps.WriteUnlock()
+					log.Printf("sse: always-allow persisted: %s", cmd)
+				}
+			}
+		} else {
+			h.broker.SetToolAutoApprove(tool)
+			log.Printf("sse: always-allow (session): %s", tool)
+		}
 	}
 	return decision == DecisionAllow || decision == DecisionAlwaysAllow
 }

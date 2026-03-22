@@ -13,6 +13,10 @@ const (
 	EventApprovalResolved = "approval_resolved"
 	EventAgentError       = "agent_error"
 	EventHeartbeatAlert   = "heartbeat_alert"
+	EventToolStatus       = "tool_status"
+	EventCloudAgent       = "cloud_agent"
+	EventCloudProgress    = "cloud_progress"
+	EventCloudPlan        = "cloud_plan"
 )
 
 // Event is a daemon lifecycle event pushed to SSE subscribers.

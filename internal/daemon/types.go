@@ -56,6 +56,8 @@ const (
 	ChannelTeams    = "teams"
 	ChannelWeChat   = "wechat"
 	ChannelWeb      = "web"
+	ChannelFeishu   = "feishu"
+	ChannelLark     = "lark"
 	ChannelSchedule = "schedule"
 	ChannelSystem   = "system"
 )

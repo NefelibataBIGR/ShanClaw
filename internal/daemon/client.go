@@ -92,6 +92,7 @@ func (c *Client) sendEnvelope(dm DaemonMessage) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
@@ -254,8 +255,13 @@ func (c *Client) handleMessage(ctx context.Context, sm ServerMessage) {
 		return
 	}
 
-	// Acquire semaphore for bounded concurrency.
-	c.sem <- struct{}{}
+	// Acquire semaphore for bounded concurrency with context check.
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		log.Printf("daemon: context cancelled waiting for semaphore (message %s)", sm.MessageID)
+		return
+	}
 	defer func() { <-c.sem }()
 
 	// Send claim.
@@ -317,12 +323,21 @@ func (c *Client) handleMessage(ctx context.Context, sm ServerMessage) {
 	c.activeMsgs.Delete(sm.MessageID)
 
 	// Send reply.
-	_ = c.SendReply(sm.MessageID, ReplyPayload{
+	if err := c.SendReply(sm.MessageID, ReplyPayload{
 		Channel:  payload.Channel,
 		ThreadID: payload.ThreadID,
 		Text:     result,
 		Format:   FormatText,
-	})
+	}); err != nil {
+		log.Printf("daemon: SendReply failed for message %s: %v", sm.MessageID, err)
+		if c.eventBus != nil {
+			payload, _ := json.Marshal(map[string]string{
+				"message_id": sm.MessageID,
+				"error":      fmt.Sprintf("reply delivery failed: %v", err),
+			})
+			c.eventBus.Emit(Event{Type: EventAgentError, Payload: payload})
+		}
+	}
 }
 
 // RunWithReconnect connects to the server and reconnects on failure with

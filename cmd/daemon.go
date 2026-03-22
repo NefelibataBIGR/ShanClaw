@@ -166,7 +166,7 @@ var daemonStartCmd = &cobra.Command{
 				switch deps.SessionCache.InjectMessage(req.RouteKey, req.Text) {
 				case daemon.InjectOK:
 					// Message injected — running loop will incorporate it.
-					return ""
+					return "[message received, processing...]"
 				case daemon.InjectQueueFull:
 					// Active run exists but queue saturated — don't start a new run.
 					log.Printf("daemon: inject queue full for route %q, message dropped", req.RouteKey)
@@ -490,16 +490,40 @@ type daemonEventHandler struct {
 	deps        *daemon.ServerDeps
 }
 
-func (h *daemonEventHandler) OnToolCall(name string, args string) {}
+func (h *daemonEventHandler) OnToolCall(name string, args string) {
+	if h.deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "running"})
+		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventToolStatus, Payload: payload})
+	}
+}
 func (h *daemonEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
 	log.Printf("daemon: tool %s completed (%.1fs)", name, elapsed.Seconds())
+	if h.deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "completed", "elapsed": elapsed.Seconds()})
+		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventToolStatus, Payload: payload})
+	}
 }
 func (h *daemonEventHandler) OnText(text string)            {}
 func (h *daemonEventHandler) OnStreamDelta(delta string)    {}
 func (h *daemonEventHandler) OnUsage(usage agent.TurnUsage) {}
-func (h *daemonEventHandler) OnCloudAgent(agentID, status, message string) {}
-func (h *daemonEventHandler) OnCloudProgress(completed, total int)         {}
-func (h *daemonEventHandler) OnCloudPlan(planType, content string, needsReview bool) {}
+func (h *daemonEventHandler) OnCloudAgent(agentID, status, message string) {
+	if h.deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]string{"agent_id": agentID, "status": status, "message": message})
+		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventCloudAgent, Payload: payload})
+	}
+}
+func (h *daemonEventHandler) OnCloudProgress(completed, total int) {
+	if h.deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]int{"completed": completed, "total": total})
+		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventCloudProgress, Payload: payload})
+	}
+}
+func (h *daemonEventHandler) OnCloudPlan(planType, content string, needsReview bool) {
+	if h.deps.EventBus != nil {
+		payload, _ := json.Marshal(map[string]interface{}{"type": planType, "content": content, "needs_review": needsReview})
+		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventCloudPlan, Payload: payload})
+	}
+}
 func (h *daemonEventHandler) OnApprovalNeeded(tool string, args string) bool {
 	if h.autoApprove {
 		log.Printf("daemon: auto-approving %s (auto_approve=true)", tool)
