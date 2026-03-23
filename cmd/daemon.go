@@ -502,8 +502,13 @@ func (h *daemonEventHandler) OnToolCall(name string, args string) {
 		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "running", "session_id": h.sessionID})
 		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventToolStatus, Payload: payload})
 	}
-	if h.wsClient != nil && h.messageID != "" {
-		if err := h.wsClient.SendEvent(h.messageID, "TOOL_INVOKED", name, map[string]interface{}{"tool": name}); err != nil {
+	// Skip cloud_delegate — it has its own streaming path via SendProgressWithWorkflow.
+	// Forwarding it as a daemon event would conflict (creates a daemon: stream that
+	// never receives WORKFLOW_COMPLETED from the Temporal workflow).
+	if h.wsClient != nil && h.messageID != "" && name != "cloud_delegate" {
+		// Send empty message so StreamConsumer uses toolDisplayName mapping
+		// (e.g., "web_search" → "Searching the web")
+		if err := h.wsClient.SendEvent(h.messageID, "TOOL_INVOKED", "", map[string]interface{}{"tool": name}); err != nil {
 			log.Printf("daemon: event forward failed: %v", err)
 		}
 	}
@@ -514,8 +519,8 @@ func (h *daemonEventHandler) OnToolResult(name string, args string, result agent
 		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "completed", "elapsed": elapsed.Seconds(), "session_id": h.sessionID})
 		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventToolStatus, Payload: payload})
 	}
-	if h.wsClient != nil && h.messageID != "" {
-		if err := h.wsClient.SendEvent(h.messageID, "TOOL_COMPLETED", name, map[string]interface{}{"tool": name, "elapsed": elapsed.Seconds()}); err != nil {
+	if h.wsClient != nil && h.messageID != "" && name != "cloud_delegate" {
+		if err := h.wsClient.SendEvent(h.messageID, "TOOL_COMPLETED", "", map[string]interface{}{"tool": name, "elapsed": elapsed.Seconds()}); err != nil {
 			log.Printf("daemon: event forward failed: %v", err)
 		}
 	}
