@@ -605,19 +605,39 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			ReasoningEffort: a.reasoningEffort,
 		}
 
-		if a.enableStreaming && a.handler != nil {
-			resp, err = a.client.CompleteStream(ctx, req, func(delta client.StreamDelta) {
-				a.handler.OnStreamDelta(delta.Text)
-			})
-			// Fall back to non-streaming if gateway doesn't support it
-			if err != nil {
+		const maxLLMRetries = 3
+		for attempt := 0; ; attempt++ {
+			// On retries, skip streaming to avoid duplicate partial deltas.
+			if attempt == 0 && a.enableStreaming && a.handler != nil {
+				resp, err = a.client.CompleteStream(ctx, req, func(delta client.StreamDelta) {
+					a.handler.OnStreamDelta(delta.Text)
+				})
+				// Fall back to non-streaming if gateway doesn't support it
+				if err != nil {
+					resp, err = a.client.Complete(ctx, req)
+				}
+			} else {
 				resp, err = a.client.Complete(ctx, req)
 			}
-		} else {
-			resp, err = a.client.Complete(ctx, req)
-		}
-		if err != nil {
-			return "", usage, fmt.Errorf("LLM call failed: %w", err)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return "", usage, fmt.Errorf("LLM call cancelled: %w", ctx.Err())
+			}
+			if !isRetryableLLMError(err) || attempt >= maxLLMRetries-1 {
+				return "", usage, fmt.Errorf("LLM call failed: %w", err)
+			}
+			backoff := time.Duration(1<<attempt) * time.Second // 1s, 2s, 4s
+			fmt.Fprintf(os.Stderr, "[agent] LLM call failed (attempt %d/%d), retrying in %v: %v\n", attempt+1, maxLLMRetries, backoff, err)
+			if a.handler != nil {
+				a.handler.OnCloudAgent("", "retry", fmt.Sprintf("Retrying request (attempt %d/%d)…", attempt+1, maxLLMRetries))
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return "", usage, fmt.Errorf("LLM call cancelled: %w", ctx.Err())
+			}
 		}
 
 		usage.Add(resp.Usage)
@@ -1102,12 +1122,12 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				Role:    "user",
 				Content: client.NewTextContent(worstMsg),
 			})
-			finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
+			finalResp, err := a.completeWithRetry(ctx, client.CompletionRequest{
 				Messages:  messages,
 				ModelTier: a.modelTier,
 			})
 			if err != nil {
-				return "", usage, fmt.Errorf("LLM call failed: %w", err)
+				return "", usage, err
 			}
 			usage.Add(finalResp.Usage)
 			if a.handler != nil {
@@ -1125,12 +1145,12 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent(worstMsg),
 				})
-				finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
+				finalResp, err := a.completeWithRetry(ctx, client.CompletionRequest{
 					Messages:  messages,
 					ModelTier: a.modelTier,
 				})
 				if err != nil {
-					return "", usage, fmt.Errorf("LLM call failed: %w", err)
+					return "", usage, err
 				}
 				usage.Add(finalResp.Usage)
 				if a.handler != nil {
@@ -1185,6 +1205,64 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		return lastText, usage, ErrMaxIterReached
 	}
 	return "", usage, fmt.Errorf("agent loop exceeded %d iterations", a.effectiveMaxIter(toolsUsed))
+}
+
+// completeWithRetry calls client.Complete with retry+backoff for transient errors.
+// Used for non-streaming LLM calls (loop-force-stop, nudge escalation, etc.).
+func (a *AgentLoop) completeWithRetry(ctx context.Context, req client.CompletionRequest) (*client.CompletionResponse, error) {
+	const maxRetries = 3
+	var resp *client.CompletionResponse
+	var err error
+	for attempt := 0; ; attempt++ {
+		resp, err = a.client.Complete(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("LLM call cancelled: %w", ctx.Err())
+		}
+		if !isRetryableLLMError(err) || attempt >= maxRetries-1 {
+			return nil, fmt.Errorf("LLM call failed: %w", err)
+		}
+		backoff := time.Duration(1<<attempt) * time.Second
+		fmt.Fprintf(os.Stderr, "[agent] LLM call failed (attempt %d/%d), retrying in %v: %v\n", attempt+1, maxRetries, backoff, err)
+		if a.handler != nil {
+			a.handler.OnCloudAgent("", "retry", fmt.Sprintf("Retrying request (attempt %d/%d)…", attempt+1, maxRetries))
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("LLM call cancelled: %w", ctx.Err())
+		}
+	}
+}
+
+// isRetryableLLMError returns true for transient errors that may succeed on retry
+// (rate limits, server errors, timeouts). Non-retryable: 400 bad request,
+// 401 auth, 403 forbidden, context cancelled, marshalling errors.
+func isRetryableLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Typed API error — check status code directly.
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case 429, 500, 502, 503, 529:
+			return true
+		default:
+			return false
+		}
+	}
+	// Network-level and stream-layer failures (timeout, connection reset, etc.)
+	msg := err.Error()
+	if strings.Contains(msg, "request failed:") {
+		return true
+	}
+	if strings.Contains(msg, "stream read error:") || strings.Contains(msg, "stream ended without done event") {
+		return true
+	}
+	return false
 }
 
 // checkPermissionAndApproval runs the permission engine check, then falls back

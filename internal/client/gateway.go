@@ -13,6 +13,19 @@ import (
 	"time"
 )
 
+// APIError represents an HTTP error from the LLM API with a status code.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("API returned %d: %s", e.StatusCode, e.Body)
+	}
+	return fmt.Sprintf("API returned %d", e.StatusCode)
+}
+
 // --- Public types (used by agent loop) ---
 
 // ContentBlock represents a polymorphic content block.
@@ -372,11 +385,7 @@ func (c *GatewayClient) Complete(ctx context.Context, req CompletionRequest) (*C
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody := readResponseBody(resp)
-		if errBody != "" {
-			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, errBody)
-		}
-		return nil, fmt.Errorf("API returned %d", resp.StatusCode)
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: readResponseBody(resp)}
 	}
 
 	var result CompletionResponse
@@ -418,11 +427,7 @@ func (c *GatewayClient) CompleteStream(ctx context.Context, req CompletionReques
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody := readResponseBody(resp)
-		if errBody != "" {
-			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, errBody)
-		}
-		return nil, fmt.Errorf("API returned %d", resp.StatusCode)
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: readResponseBody(resp)}
 	}
 
 	// Parse SSE stream
@@ -650,11 +655,7 @@ func (c *GatewayClient) ListTools(ctx context.Context) ([]ServerToolSchema, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody := readResponseBody(resp)
-		if errBody != "" {
-			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, errBody)
-		}
-		return nil, fmt.Errorf("API returned %d", resp.StatusCode)
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: readResponseBody(resp)}
 	}
 
 	var tools []ServerToolSchema

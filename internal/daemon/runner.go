@@ -474,11 +474,14 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 
 	result, usage, runErr := loop.Run(ctx, prompt, history)
 	if runErr != nil && !errors.Is(runErr, agent.ErrMaxIterReached) {
-		// Hard error — save a synthetic error message so the session isn't
+		// Hard error — save a user-friendly error message so the session isn't
 		// left with a dangling user message and no assistant reply.
+		// Full error detail goes to the log; session/UI gets a clean summary.
+		log.Printf("daemon: agent %s run error: %v", agentName, runErr)
 		if !req.Ephemeral && result == "" {
+			userErr := FriendlyAgentError(runErr)
 			sess.Messages = append(sess.Messages,
-				client.Message{Role: "assistant", Content: client.NewTextContent("[error: agent failed to respond]")},
+				client.Message{Role: "assistant", Content: client.NewTextContent(userErr)},
 			)
 			sess.MessageMeta = append(sess.MessageMeta,
 				session.MessageMeta{Source: req.Source, Timestamp: session.TimePtr(time.Now())},
@@ -595,4 +598,26 @@ func closeRouteDone(done chan struct{}) {
 		}
 	}()
 	close(done)
+}
+
+// FriendlyAgentError maps raw agent errors to user-facing messages.
+// Full error detail is logged separately; this keeps session/UI clean.
+func FriendlyAgentError(err error) string {
+	// Check context errors structurally before string matching.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "The request was cancelled or timed out."
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "429"):
+		return "Sorry, the AI service is currently rate-limited. Please try again in a moment."
+	case strings.Contains(msg, "529") || strings.Contains(msg, "overloaded"):
+		return "Sorry, the AI service is temporarily overloaded. Please try again shortly."
+	case strings.Contains(msg, "500") || strings.Contains(msg, "502") || strings.Contains(msg, "503"):
+		return "Sorry, the AI service encountered a temporary error. Please try again."
+	case strings.Contains(msg, "request failed:") || strings.Contains(msg, "stream read error"):
+		return "Sorry, the connection to the AI service was interrupted. Please try again."
+	default:
+		return "Sorry, an unexpected error occurred. Please try again."
+	}
 }

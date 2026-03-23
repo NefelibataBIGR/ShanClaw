@@ -199,8 +199,8 @@ var daemonStartCmd = &cobra.Command{
 
 			result, err := daemon.RunAgent(msgCtx, deps, req, handler)
 			if err != nil {
-				log.Printf("daemon: agent error: %v", err)
-				return fmt.Sprintf("Sorry, I encountered an error: %v", err)
+				// Full error already logged inside RunAgent; return clean message.
+				return daemon.FriendlyAgentError(err)
 			}
 
 			log.Printf("daemon: reply to %s (%d tokens, $%.4f)", result.Agent, result.Usage.TotalTokens, result.Usage.CostUSD)
