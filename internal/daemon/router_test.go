@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/client"
@@ -295,4 +296,44 @@ func TestSessionCache_CancelRoute_Nonexistent(t *testing.T) {
 
 	// Should not panic
 	sc.CancelRoute("agent:nonexistent")
+}
+
+func TestResolveLatestSession_NoRoute(t *testing.T) {
+	sc := NewSessionCache(t.TempDir())
+	_, _, err := sc.ResolveLatestSession("agent:nonexistent", "")
+	if err == nil {
+		t.Error("expected error for non-existent route")
+	}
+}
+
+func TestAppendToSession_NoRoute(t *testing.T) {
+	sc := NewSessionCache(t.TempDir())
+	err := sc.AppendToSession("agent:nonexistent", "", "some-id", nil)
+	if err == nil {
+		t.Error("expected error for non-existent route")
+	}
+}
+
+func TestAppendToSession_SessionChanged(t *testing.T) {
+	dir := t.TempDir()
+	sessionsDir := dir + "/agents/test/sessions"
+
+	// Pre-create a persisted session so ResumeLatest finds it.
+	store := session.NewStore(sessionsDir)
+	store.Save(&session.Session{
+		ID:    "real-session-id",
+		Title: "test session",
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("hello")},
+		},
+	})
+
+	sc := NewSessionCache(dir)
+	entry := sc.LockRouteWithManager("agent:test", sessionsDir)
+	entry.mu.Unlock()
+
+	err := sc.AppendToSession("agent:test", sessionsDir, "wrong-id", nil)
+	if !errors.Is(err, ErrSessionChanged) {
+		t.Errorf("expected ErrSessionChanged, got %v", err)
+	}
 }

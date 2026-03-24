@@ -2,17 +2,23 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 	"github.com/Kocoro-lab/ShanClaw/internal/session"
 )
 
+var ErrSessionChanged = errors.New("session changed since pre-check")
+
 type routeEntry struct {
 	mu            sync.Mutex
+	appendMu      sync.Mutex // serializes non-destructive appends
 	cancel        context.CancelFunc
 	cancelPending bool       // set under sc.mu when CancelRoute fires before cancel is assigned
 	done          chan struct{}
@@ -392,6 +398,58 @@ func (sc *SessionCache) CloseAll() {
 		}
 	}
 	sc.managers = make(map[string]*session.Manager)
+}
+
+// ResolveLatestSession returns the latest session ID and messages for a route
+// without acquiring the run lock. Returns error if route or session doesn't exist.
+func (sc *SessionCache) ResolveLatestSession(routeKey string, sessionsDir string) (string, []client.Message, error) {
+	sc.mu.Lock()
+	entry, ok := sc.routes[routeKey]
+	sc.mu.Unlock()
+	if !ok || entry.manager == nil {
+		return "", nil, fmt.Errorf("no route entry for %q", routeKey)
+	}
+
+	entry.appendMu.Lock()
+	defer entry.appendMu.Unlock()
+
+	sess, err := entry.manager.ResumeLatest()
+	if err != nil || sess == nil {
+		return "", nil, fmt.Errorf("no session for route %q", routeKey)
+	}
+	msgs := make([]client.Message, len(sess.Messages))
+	copy(msgs, sess.Messages)
+	return sess.ID, msgs, nil
+}
+
+// AppendToSession appends messages to the latest session for a route without
+// canceling any in-flight run. Strictly non-creating.
+func (sc *SessionCache) AppendToSession(routeKey string, sessionsDir string, expectedSessionID string, messages []client.Message) error {
+	sc.mu.Lock()
+	entry, ok := sc.routes[routeKey]
+	sc.mu.Unlock()
+	if !ok || entry.manager == nil {
+		return fmt.Errorf("no route entry for %q", routeKey)
+	}
+
+	entry.appendMu.Lock()
+	defer entry.appendMu.Unlock()
+
+	sess, err := entry.manager.ResumeLatest()
+	if err != nil || sess == nil {
+		return fmt.Errorf("no session for route %q", routeKey)
+	}
+	if sess.ID != expectedSessionID {
+		return ErrSessionChanged
+	}
+
+	sess.Messages = append(sess.Messages, messages...)
+	now := time.Now()
+	for range messages {
+		sess.MessageMeta = append(sess.MessageMeta, session.MessageMeta{Source: "heartbeat", Timestamp: &now})
+	}
+	sess.UpdatedAt = now
+	return entry.manager.Save()
 }
 
 // SessionsDir returns the sessions directory for the given agent.
