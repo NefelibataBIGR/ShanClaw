@@ -29,7 +29,13 @@ import (
 // to distinguish truncated results from hard failures.
 var ErrMaxIterReached = errors.New("agent loop reached iteration limit")
 
-const baseSystemPrompt = `You are Shannon, an AI assistant running in a CLI terminal on the user's macOS computer. You have both local tools (file ops, shell, GUI control) and remote server tools (web search, research, analytics, multi-agent workflows).
+// defaultPersona is the identity line for the default (non-overridden) agent.
+// Named agents replace this with their AGENT.md content.
+const defaultPersona = `You are Shannon, an AI assistant running in a CLI terminal on the user's macOS computer. You have both local tools (file ops, shell, GUI control) and remote server tools (web search, research, analytics, multi-agent workflows).`
+
+// coreOperationalRules contains behavioral constraints that apply to ALL agents
+// (default and named). These are non-negotiable and must never be dropped.
+const coreOperationalRules = `
 
 ## Approach
 - Go straight to the point. Try the simplest approach first without going in circles.
@@ -382,10 +388,12 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	cwd, _ := os.Getwd()
 	instrText, _ := instructions.LoadInstructions(a.shannonDir, ".", 4000)
 
-	basePrompt := baseSystemPrompt
+	// Persona: named agents replace the identity line; core rules always included.
+	persona := defaultPersona
 	if a.agentBasePrompt != "" {
-		basePrompt = a.agentBasePrompt
+		persona = a.agentBasePrompt
 	}
+	basePrompt := persona + coreOperationalRules
 
 	// Memory consolidation: merge auto-*.md detail files when accumulated.
 	// Runs at most once per 7 days, only when ≥12 detail files exist.

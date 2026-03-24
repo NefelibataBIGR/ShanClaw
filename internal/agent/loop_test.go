@@ -1972,3 +1972,44 @@ func TestAgentLoop_CloudDelegateLock(t *testing.T) {
 		}
 	})
 }
+
+func TestNamedAgentPromptIncludesCoreRules(t *testing.T) {
+	// coreOperationalRules must contain key behavioral constraints.
+	// If any of these are missing, named agents lose critical guardrails.
+	required := []string{
+		"Always use tools to perform actions",
+		"NEVER claim you see, read, or completed something without a tool call",
+		"file_read before file_edit",
+		"## Tool Selection",
+		"## Error Handling",
+	}
+	for _, s := range required {
+		if !strings.Contains(coreOperationalRules, s) {
+			t.Errorf("coreOperationalRules missing required constraint: %q", s)
+		}
+	}
+
+	// Simulate named agent prompt composition: custom persona + core rules.
+	customPersona := "You are a technical writer. Write concise, clear documentation."
+	composed := customPersona + coreOperationalRules
+
+	if !strings.HasPrefix(composed, customPersona) {
+		t.Error("composed prompt should start with custom persona")
+	}
+	for _, s := range required {
+		if !strings.Contains(composed, s) {
+			t.Errorf("composed named-agent prompt missing: %q", s)
+		}
+	}
+
+	// Default agent prompt composition should also include core rules.
+	defaultComposed := defaultPersona + coreOperationalRules
+	if !strings.Contains(defaultComposed, "You are Shannon") {
+		t.Error("default composed prompt should contain Shannon persona")
+	}
+	for _, s := range required {
+		if !strings.Contains(defaultComposed, s) {
+			t.Errorf("default composed prompt missing: %q", s)
+		}
+	}
+}

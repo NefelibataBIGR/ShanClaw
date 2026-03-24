@@ -18,7 +18,7 @@ const (
 
 // PromptOptions configures the system prompt assembly.
 type PromptOptions struct {
-	BasePrompt   string   // hardcoded base (~200 tokens)
+	BasePrompt   string   // persona + core operational rules
 	Memory       string   // from LoadMemory (~500 tokens budget)
 	Instructions string   // from LoadInstructions (~4000 tokens budget)
 	ToolNames    []string // from ToolRegistry, auto-generated
@@ -39,7 +39,7 @@ type PromptOptions struct {
 func BuildSystemPrompt(opts PromptOptions) string {
 	var sb strings.Builder
 
-	// 1. Base prompt (unlimited)
+	// 1. Base prompt (persona + core rules — unlimited)
 	sb.WriteString(opts.BasePrompt)
 
 	// 2. Context (date/CWD/session — operationally critical, placed early to avoid "lost in the middle")
