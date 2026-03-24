@@ -532,35 +532,47 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 		}
 
 		// Append the turn to the session and persist.
+		// Prefer full conversation messages (including tool_use/tool_result turns)
+		// from RunMessages() so resumed sessions give the LLM tool-call evidence.
+		// Falls back to flat text if RunMessages() is empty (early LLM error).
 		source := req.Source
 		if source == "" {
 			source = "unknown"
 		}
-		// Skip user message append if already in sess.Messages from pre-loop path.
-		if !preLoopUserAppended {
+		runMsgs := loop.RunMessages()
+		if len(runMsgs) > 0 {
+			// RunMessages includes: [user prompt, assistant+tool_use, tool_result, ..., final assistant].
+			// If the user message was already appended pre-loop, skip the first
+			// message from runMsgs (same user prompt) to avoid duplication.
+			startIdx := 0
+			if preLoopUserAppended && len(runMsgs) > 0 && runMsgs[0].Role == "user" {
+				startIdx = 1
+			}
+			replyTime := time.Now()
+			for _, msg := range runMsgs[startIdx:] {
+				sess.Messages = append(sess.Messages, msg)
+				sess.MessageMeta = append(sess.MessageMeta,
+					session.MessageMeta{Source: source, Timestamp: session.TimePtr(replyTime)},
+				)
+			}
+		} else {
+			// Fallback: flat text (early error or no messages accumulated).
+			if !preLoopUserAppended {
+				sess.Messages = append(sess.Messages,
+					client.Message{Role: "user", Content: client.NewTextContent(prompt)},
+				)
+				sess.MessageMeta = append(sess.MessageMeta,
+					session.MessageMeta{Source: source, Timestamp: session.TimePtr(userMsgTime)},
+				)
+			}
+			replyTime := time.Now()
 			sess.Messages = append(sess.Messages,
-				client.Message{Role: "user", Content: client.NewTextContent(prompt)},
+				client.Message{Role: "assistant", Content: client.NewTextContent(result)},
 			)
 			sess.MessageMeta = append(sess.MessageMeta,
-				session.MessageMeta{Source: source, Timestamp: session.TimePtr(userMsgTime)},
+				session.MessageMeta{Source: source, Timestamp: session.TimePtr(replyTime)},
 			)
 		}
-		// Persist any messages injected mid-run (HITL follow-ups).
-		for _, injMsg := range loop.InjectedMessages() {
-			sess.Messages = append(sess.Messages,
-				client.Message{Role: "user", Content: client.NewTextContent(injMsg)},
-			)
-			sess.MessageMeta = append(sess.MessageMeta,
-				session.MessageMeta{Source: source, Timestamp: session.TimePtr(time.Now())},
-			)
-		}
-		replyTime := time.Now()
-		sess.Messages = append(sess.Messages,
-			client.Message{Role: "assistant", Content: client.NewTextContent(result)},
-		)
-		sess.MessageMeta = append(sess.MessageMeta,
-			session.MessageMeta{Source: source, Timestamp: session.TimePtr(replyTime)},
-		)
 		if err := sessMgr.Save(); err != nil {
 			log.Printf("daemon: failed to save session: %v", err)
 			if deps.EventBus != nil {

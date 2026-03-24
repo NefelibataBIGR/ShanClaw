@@ -233,6 +233,7 @@ type AgentLoop struct {
 	sessionID        string        // session ID for audit log correlation
 	injectCh         chan string   // receives user messages injected mid-run
 	injectedMessages []string     // messages injected during the last Run(); cleared on each Run() call
+	runMessages      []client.Message // conversation messages accumulated during the last Run() (excludes system+history)
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -332,6 +333,21 @@ func (a *AgentLoop) InjectedMessages() []string {
 	return a.injectedMessages
 }
 
+// RunMessages returns the conversation messages accumulated during the last
+// Run() call, excluding the system prompt and pre-existing history. This
+// includes the user prompt, all assistant responses (with tool_use blocks),
+// tool_result messages, and internal nudges — the full agentic conversation.
+// Callers (e.g., daemon runner) use this to persist rich session history so
+// that resumed sessions give the LLM tool-call evidence, not just flat text.
+func (a *AgentLoop) RunMessages() []client.Message {
+	if len(a.runMessages) == 0 {
+		return nil
+	}
+	out := make([]client.Message, len(a.runMessages))
+	copy(out, a.runMessages)
+	return out
+}
+
 // SwitchAgent applies full per-agent scoping: prompt, memory directory, tool registry,
 // and MCP context. Pass a new ToolRegistry and MCP context string built from
 // the agent's scoped MCP servers. If reg is nil, the existing registry is kept.
@@ -378,6 +394,7 @@ type approvedToolCall struct {
 
 func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []client.Message) (string, *TurnUsage, error) {
 	a.injectedMessages = nil // reset for this run
+	a.runMessages = nil      // reset for this run
 
 	// Build system prompt using prompt builder with instructions/memory
 	var toolNames []string
@@ -435,6 +452,20 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		messages = append(messages, history...)
 	}
 	messages = append(messages, client.Message{Role: "user", Content: client.NewTextContent(userMessage)})
+
+	// Track where new messages start so RunMessages() can return only this run's
+	// conversation (user prompt + tool calls + results + assistant replies),
+	// excluding the system prompt and pre-existing history.
+	// newMsgOffset points to the user message we just appended.
+	// It is updated after context compaction (ShapeHistory reassigns messages to
+	// a shorter slice, invalidating the original offset).
+	newMsgOffset := len(messages) - 1
+	captureRunMessages := func() {
+		if newMsgOffset >= 1 && newMsgOffset < len(messages) {
+			a.runMessages = make([]client.Message, len(messages)-newMsgOffset)
+			copy(a.runMessages, messages[newMsgOffset:])
+		}
+	}
 
 	toolSchemas := a.tools.Schemas()
 	usage := &TurnUsage{}
@@ -499,6 +530,13 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 		// Check for context cancellation (e.g. user pressed Esc)
 		if ctx.Err() != nil {
+			if lastText != "" {
+				messages = append(messages, client.Message{
+					Role:    "assistant",
+					Content: client.NewTextContent(lastText),
+				})
+			}
+			captureRunMessages()
 			return lastText, usage, ctx.Err()
 		}
 
@@ -593,6 +631,14 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					messages = ctxwin.ShapeHistory(messages, compactionSummary, a.contextWindow)
 					if len(messages) < before {
 						fmt.Fprintf(os.Stderr, "[context] compacted: %d → %d messages\n", before, len(messages))
+						// Adjust newMsgOffset: compaction drops middle messages
+						// but keeps the recent tail. Shift by the number dropped.
+						// Clamp to 1 (skip system prompt at index 0) so that
+						// captureRunMessages never includes the system message.
+						newMsgOffset -= before - len(messages)
+						if newMsgOffset < 1 {
+							newMsgOffset = 1
+						}
 					}
 					compactionApplied = true
 				}
@@ -631,9 +677,11 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				break
 			}
 			if ctx.Err() != nil {
+				captureRunMessages()
 				return "", usage, fmt.Errorf("LLM call cancelled: %w", ctx.Err())
 			}
 			if !isRetryableLLMError(err) || attempt >= maxLLMRetries-1 {
+				captureRunMessages()
 				return "", usage, fmt.Errorf("LLM call failed: %w", err)
 			}
 			backoff := time.Duration(1<<attempt) * time.Second // 1s, 2s, 4s
@@ -644,6 +692,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
+				captureRunMessages()
 				return "", usage, fmt.Errorf("LLM call cancelled: %w", ctx.Err())
 			}
 		}
@@ -754,6 +803,12 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				truncatedText.WriteString(resp.OutputText)
 				fullText = truncatedText.String()
 			}
+			// Record the final assistant text in messages before capturing.
+			messages = append(messages, client.Message{
+				Role:    "assistant",
+				Content: client.NewTextContent(fullText),
+			})
+			captureRunMessages()
 			if a.handler != nil {
 				a.handler.OnText(fullText)
 			}
@@ -1106,8 +1161,10 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				})
 			}
 		} else if allResults.Len() > 0 {
+			// Use "user" role (same as native path) so persisted history avoids
+			// consecutive assistant-role messages which the API rejects on resume.
 			messages = append(messages, client.Message{
-				Role:    "assistant",
+				Role:    "user",
 				Content: client.NewTextContent(strings.TrimRight(allResults.String(), " \t\n\r")),
 			})
 		}
@@ -1117,6 +1174,11 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		// already recorded in messages[] for follow-up context.
 		// Only bypass when cloud_delegate was the sole tool call this iteration.
 		if cloudResultContent != "" && len(toolCalls) == 1 {
+			messages = append(messages, client.Message{
+				Role:    "assistant",
+				Content: client.NewTextContent(cloudResultContent),
+			})
+			captureRunMessages()
 			if a.handler != nil {
 				a.handler.OnText(cloudResultContent)
 			}
@@ -1135,9 +1197,15 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				ModelTier: a.modelTier,
 			})
 			if err != nil {
+				captureRunMessages()
 				return "", usage, err
 			}
 			usage.Add(finalResp.Usage)
+			messages = append(messages, client.Message{
+				Role:    "assistant",
+				Content: client.NewTextContent(finalResp.OutputText),
+			})
+			captureRunMessages()
 			if a.handler != nil {
 				a.handler.OnText(finalResp.OutputText)
 			}
@@ -1158,9 +1226,15 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					ModelTier: a.modelTier,
 				})
 				if err != nil {
+					captureRunMessages()
 					return "", usage, err
 				}
 				usage.Add(finalResp.Usage)
+				messages = append(messages, client.Message{
+					Role:    "assistant",
+					Content: client.NewTextContent(finalResp.OutputText),
+				})
+				captureRunMessages()
 				if a.handler != nil {
 					a.handler.OnText(finalResp.OutputText)
 				}
@@ -1210,8 +1284,14 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	// Graceful degradation: return last text with a sentinel error so the
 	// caller knows the loop was truncated (not a clean completion).
 	if lastText != "" {
+		messages = append(messages, client.Message{
+			Role:    "assistant",
+			Content: client.NewTextContent(lastText),
+		})
+		captureRunMessages()
 		return lastText, usage, ErrMaxIterReached
 	}
+	captureRunMessages()
 	return "", usage, fmt.Errorf("agent loop exceeded %d iterations", a.effectiveMaxIter(toolsUsed))
 }
 
