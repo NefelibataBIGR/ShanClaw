@@ -240,6 +240,11 @@ func (m *Manager) tickGoalDriven(ctx context.Context, ah *agentHeartbeat, goals 
 	elapsed := time.Since(start).Milliseconds()
 
 	if err != nil {
+		// Context cancellation is normal during shutdown/reload — don't alert.
+		if ctx.Err() != nil {
+			log.Printf("heartbeat: %q canceled (session=%s, duration=%dms)", ah.name, sessionID, elapsed)
+			return
+		}
 		log.Printf("heartbeat: %q error (session=%s, duration=%dms): %v", ah.name, sessionID, elapsed, err)
 		m.emitAlert(ah.name, fmt.Sprintf("Heartbeat error: %v", err), "")
 		return
