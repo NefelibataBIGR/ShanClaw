@@ -449,7 +449,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	messages := make([]client.Message, 0)
 	messages = append(messages, client.Message{Role: "system", Content: client.NewTextContent(systemPrompt)})
 	if history != nil {
-		messages = append(messages, history...)
+		messages = append(messages, ctxwin.SanitizeHistory(history)...)
 	}
 	messages = append(messages, client.Message{Role: "user", Content: client.NewTextContent(userMessage)})
 
