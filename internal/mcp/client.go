@@ -33,16 +33,18 @@ type RemoteTool struct {
 
 // ClientManager manages connections to multiple MCP servers.
 type ClientManager struct {
-	mu      sync.Mutex
-	clients map[string]mcpclient.MCPClient // server name → client
-	configs map[string]MCPServerConfig     // server name → config (for reconnect)
+	mu        sync.Mutex
+	clients   map[string]mcpclient.MCPClient // server name → client
+	configs   map[string]MCPServerConfig     // server name → config (for reconnect)
+	toolCache map[string][]RemoteTool        // server name → last-known tools
 }
 
 // NewClientManager creates a new MCP client manager.
 func NewClientManager() *ClientManager {
 	return &ClientManager{
-		clients: make(map[string]mcpclient.MCPClient),
-		configs: make(map[string]MCPServerConfig),
+		clients:   make(map[string]mcpclient.MCPClient),
+		configs:   make(map[string]MCPServerConfig),
+		toolCache: make(map[string][]RemoteTool),
 	}
 }
 
@@ -109,6 +111,10 @@ func (m *ClientManager) ConnectedServers() []string {
 }
 
 func (m *ClientManager) connect(ctx context.Context, name string, cfg MCPServerConfig) ([]RemoteTool, error) {
+	m.mu.Lock()
+	m.configs[name] = cfg
+	m.mu.Unlock()
+
 	var c mcpclient.MCPClient
 	var err error
 
@@ -162,7 +168,6 @@ func (m *ClientManager) connect(ctx context.Context, name string, cfg MCPServerC
 
 	m.mu.Lock()
 	m.clients[name] = c
-	m.configs[name] = cfg
 	m.mu.Unlock()
 
 	var tools []RemoteTool
@@ -172,6 +177,10 @@ func (m *ClientManager) connect(ctx context.Context, name string, cfg MCPServerC
 			Tool:       t,
 		})
 	}
+
+	m.mu.Lock()
+	m.toolCache[name] = tools
+	m.mu.Unlock()
 
 	return tools, nil
 }
