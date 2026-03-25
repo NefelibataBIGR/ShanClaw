@@ -82,9 +82,11 @@ func TestSupervisor_ProbeNow_BeforeStart(t *testing.T) {
 
 func TestSupervisor_IdleDisconnect(t *testing.T) {
 	mgr := NewClientManager()
-	// Pre-populate a "connected" server config (no real client)
+	// Pre-populate a server with a real client so it starts as healthy
+	fakeClient := &fakeListToolsClient{}
 	mgr.mu.Lock()
 	mgr.configs["test"] = MCPServerConfig{Command: "dummy"}
+	mgr.clients["test"] = fakeClient
 	mgr.mu.Unlock()
 
 	sup := NewSupervisor(mgr)
@@ -99,8 +101,12 @@ func TestSupervisor_IdleDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	sup.Start(ctx)
 
-	// Wait for disconnect (no client means ProbeTransport fails immediately,
-	// reconnect also fails since "dummy" command doesn't exist)
+	// Simulate disconnect by making ListTools fail
+	fakeClient.mu.Lock()
+	fakeClient.listToolsErr = fmt.Errorf("broken pipe")
+	fakeClient.mu.Unlock()
+
+	// Wait for disconnect (transport probe fails, reconnect fails since "dummy" command)
 	select {
 	case state := <-onChange:
 		if state != StateDisconnected {
@@ -168,71 +174,52 @@ func TestSupervisor_Recovery(t *testing.T) {
 	mgr := NewClientManager()
 	mgr.mu.Lock()
 	mgr.configs["test"] = MCPServerConfig{Command: "dummy"}
+	// No client → starts as StateDisconnected
 	mgr.mu.Unlock()
 
 	sup := NewSupervisor(mgr)
 	sup.transportInterval = 10 * time.Millisecond
 	sup.capabilityInterval = 20 * time.Millisecond
 
-	var transitions []stateTransition
-	var mu sync.Mutex
-	transitionCh := make(chan struct{}, 20)
+	transitionCh := make(chan stateTransition, 20)
 	sup.SetOnChange(func(server string, old, new HealthState) {
-		mu.Lock()
-		transitions = append(transitions, stateTransition{server: server, old: old, new: new})
-		mu.Unlock()
-		select {
-		case transitionCh <- struct{}{}:
-		default:
-		}
+		transitionCh <- stateTransition{server: server, old: old, new: new}
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sup.Start(ctx)
 
-	// Wait for initial disconnect
-	select {
-	case <-transitionCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for initial disconnect")
+	// Verify initial state is disconnected (seeded, no transition)
+	health := sup.HealthFor("test")
+	if health.State != StateDisconnected {
+		t.Fatalf("expected initial state disconnected, got %v", health.State)
 	}
-
-	mu.Lock()
-	if len(transitions) == 0 || transitions[0].new != StateDisconnected {
-		mu.Unlock()
-		t.Fatal("expected first transition to disconnected")
-	}
-	mu.Unlock()
 
 	// Inject a working client to simulate recovery
 	mgr.mu.Lock()
 	mgr.clients["test"] = &fakeListToolsClient{}
 	mgr.mu.Unlock()
 
-	// Trigger immediate probe via ProbeNow instead of waiting for backoff timer
+	// Trigger immediate probe via ProbeNow
 	go func() {
 		sup.ProbeNow("test")
 	}()
 
-	// Wait for recovery (healthy transition)
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case <-transitionCh:
-			mu.Lock()
-			last := transitions[len(transitions)-1]
-			mu.Unlock()
-			if last.new == StateHealthy {
-				cancel()
-				sup.Stop()
-				return
-			}
-		case <-deadline:
-			cancel()
-			sup.Stop()
-			t.Fatal("timed out waiting for healthy recovery")
+	// Wait for recovery (disconnected → healthy)
+	select {
+	case tr := <-transitionCh:
+		if tr.new != StateHealthy {
+			t.Errorf("expected healthy, got %v", tr.new)
 		}
+		if tr.old != StateDisconnected {
+			t.Errorf("expected old=disconnected, got %v", tr.old)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for healthy recovery")
 	}
+
+	cancel()
+	sup.Stop()
 }
 
 func TestSupervisor_StopDrainsWaiters(t *testing.T) {
@@ -568,6 +555,7 @@ func (m *mockCapabilityProbe) Probe(ctx context.Context, caller ToolCaller, serv
 
 // fakeListToolsClient satisfies mcpclient.MCPClient for transport probes.
 type fakeListToolsClient struct {
+	mu           sync.Mutex
 	listToolsErr error
 }
 
@@ -607,7 +595,10 @@ func (f *fakeListToolsClient) ListToolsByPage(context.Context, mcp.ListToolsRequ
 	return &mcp.ListToolsResult{}, nil
 }
 func (f *fakeListToolsClient) ListTools(context.Context, mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
-	return &mcp.ListToolsResult{}, f.listToolsErr
+	f.mu.Lock()
+	err := f.listToolsErr
+	f.mu.Unlock()
+	return &mcp.ListToolsResult{}, err
 }
 func (f *fakeListToolsClient) CallTool(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return &mcp.CallToolResult{}, nil

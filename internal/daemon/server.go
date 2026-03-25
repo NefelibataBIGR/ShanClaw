@@ -2028,9 +2028,23 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 
 		newSupervisor.Start(s.ctx)
 	} else {
-		// Config changed but MCP servers didn't — just update config.
+		// Config changed but MCP servers didn't — update config and refresh
+		// cached rebuild layers so health-driven rebuilds use current settings.
+		newBaseline, _, newBaseCleanup := tools.RegisterLocalTools(newCfg)
+		// Re-register gateway tools on top of fresh baseline clone
+		freshReg := newBaseline.Clone()
+		_ = tools.RegisterServerTools(context.Background(), s.deps.GW, freshReg)
+		tools.RegisterCloudDelegate(freshReg, s.deps.GW, newCfg, nil, "", "")
+		newGatewayOverlay := tools.ExtractGatewayTools(freshReg)
+		newPostOverlays := tools.ExtractPostOverlays(freshReg, newBaseline)
+
 		s.deps.mu.Lock()
+		oldCleanup := s.deps.Cleanup
 		s.deps.Config = newCfg
+		s.deps.BaselineReg = newBaseline
+		s.deps.GatewayOverlay = newGatewayOverlay
+		s.deps.PostOverlays = newPostOverlays
+		s.deps.Cleanup = func() { newBaseCleanup(); oldCleanup() }
 		s.deps.mu.Unlock()
 	}
 

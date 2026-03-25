@@ -119,6 +119,9 @@ var daemonStartCmd = &cobra.Command{
 			HookRunner:      hookRunner,
 			SessionCache:    sessionCache,
 			ScheduleManager: scheduleManager,
+			BaselineReg:     baselineReg,
+			GatewayOverlay:  gatewayOverlay,
+			PostOverlays:    postOverlays,
 		}
 		defer func() {
 			if deps.Supervisor != nil {
@@ -134,10 +137,9 @@ var daemonStartCmd = &cobra.Command{
 			if depsSup != supervisor {
 				return
 			}
-			newReg := tools.RebuildRegistryForHealth(
-				baselineReg, gatewayOverlay, postOverlays,
-				supervisor.HealthStates(), mcpMgr,
-			)
+			// Read cached layers from deps (refreshed on any config reload)
+			bl, gwOv, po, mgr := deps.RebuildLayers()
+			newReg := tools.RebuildRegistryForHealth(bl, gwOv, po, supervisor.HealthStates(), mgr)
 			deps.WriteLock()
 			deps.Registry = newReg
 			deps.WriteUnlock()

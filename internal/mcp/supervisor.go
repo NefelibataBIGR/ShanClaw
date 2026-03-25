@@ -244,13 +244,19 @@ func (s *Supervisor) Start(ctx context.Context) {
 		if connectedServers[name] {
 			lastTransportOK = now
 		}
-		// All servers start as StateHealthy (provisional). The first probe cycle
-		// establishes the real state. This ensures a definitive onChange fires for
-		// servers that are actually disconnected.
+		// Seed initial state from actual client presence.
+		// Servers with a connected client start as StateHealthy (provisional for
+		// those with capability probes — the initial probe cycle validates).
+		// Servers without a client start as StateDisconnected to avoid
+		// briefly reporting a disconnected server as healthy.
+		initialState := StateDisconnected
+		if connectedServers[name] {
+			initialState = StateHealthy
+		}
 		entry := &serverEntry{
 			config: cfg,
 			health: ServerHealth{
-				State:           StateHealthy,
+				State:           initialState,
 				Since:           now,
 				LastTransportOK: lastTransportOK,
 			},
@@ -356,29 +362,16 @@ func (s *Supervisor) serverLoop(ctx context.Context, name string, entry *serverE
 }
 
 // runTransportProbe probes transport health and attempts reconnect on failure.
+// When transport recovers and the server has a capability probe, runs it
+// immediately before declaring healthy — prevents registering Playwright tools
+// while Chrome/Bridge is still unavailable.
 func (s *Supervisor) runTransportProbe(ctx context.Context, name string, entry *serverEntry) {
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	err := s.mgr.ProbeTransport(probeCtx, name)
 	if err == nil {
-		now := time.Now()
-		s.mu.Lock()
-		entry.transportBackoff.recordSuccess()
-		entry.health.LastTransportOK = now
-		entry.health.LastTransportError = ""
-		entry.health.ConsecutiveFailures = 0
-		old := entry.health.State
-		// Only transition to healthy if we were disconnected (not degraded — that needs capability probe).
-		if old == StateDisconnected {
-			entry.health.State = StateHealthy
-			entry.health.Since = now
-		}
-		newState := entry.health.State
-		s.mu.Unlock()
-		if old != newState {
-			s.fireOnChange(name, old, newState)
-		}
+		s.recordTransportOK(ctx, name, entry)
 		return
 	}
 
@@ -388,22 +381,7 @@ func (s *Supervisor) runTransportProbe(ctx context.Context, name string, entry *
 
 	_, reconnErr := s.mgr.Reconnect(reconnCtx, name)
 	if reconnErr == nil {
-		now := time.Now()
-		s.mu.Lock()
-		entry.transportBackoff.recordSuccess()
-		entry.health.LastTransportOK = now
-		entry.health.LastTransportError = ""
-		entry.health.ConsecutiveFailures = 0
-		old := entry.health.State
-		if old == StateDisconnected {
-			entry.health.State = StateHealthy
-			entry.health.Since = now
-		}
-		newState := entry.health.State
-		s.mu.Unlock()
-		if old != newState {
-			s.fireOnChange(name, old, newState)
-		}
+		s.recordTransportOK(ctx, name, entry)
 		return
 	}
 
@@ -421,6 +399,36 @@ func (s *Supervisor) runTransportProbe(ctx context.Context, name string, entry *
 	s.mu.Unlock()
 	if old != StateDisconnected {
 		s.fireOnChange(name, old, StateDisconnected)
+	}
+}
+
+// recordTransportOK is called when transport is confirmed alive (probe or reconnect succeeded).
+// For servers with a capability probe, runs it immediately before declaring healthy.
+func (s *Supervisor) recordTransportOK(ctx context.Context, name string, entry *serverEntry) {
+	now := time.Now()
+	s.mu.Lock()
+	entry.transportBackoff.recordSuccess()
+	entry.health.LastTransportOK = now
+	entry.health.LastTransportError = ""
+	entry.health.ConsecutiveFailures = 0
+	old := entry.health.State
+	probe := s.probes[name]
+	s.mu.Unlock()
+
+	if probe != nil {
+		// Has capability probe — run it before declaring healthy.
+		// This prevents registering Playwright tools while Chrome is unavailable.
+		s.runCapabilityProbe(ctx, name, entry, probe)
+		return
+	}
+
+	// No capability probe — transport OK means healthy.
+	if old == StateDisconnected {
+		s.mu.Lock()
+		entry.health.State = StateHealthy
+		entry.health.Since = now
+		s.mu.Unlock()
+		s.fireOnChange(name, old, StateHealthy)
 	}
 }
 

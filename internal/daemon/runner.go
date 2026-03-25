@@ -142,6 +142,9 @@ type ServerDeps struct {
 	MCPManager      *mcp.ClientManager // live MCP connections; swapped on reload
 	Supervisor      *mcp.Supervisor    // MCP health supervisor; swapped on reload
 	Cleanup         func()             // closes MCP connections; swapped on reload
+	BaselineReg     *agent.ToolRegistry // local-only tools; refreshed on reload
+	GatewayOverlay  []agent.Tool        // cached gateway tools; refreshed on reload
+	PostOverlays    []agent.Tool        // cloud_delegate etc.; refreshed on reload
 	ShannonDir      string
 	AgentsDir       string
 	Auditor         *audit.AuditLogger
@@ -177,6 +180,14 @@ func (d *ServerDeps) ShutdownCleanup() {
 // handler to update in-memory config (e.g., always-allow persistence).
 func (d *ServerDeps) WriteLock()   { d.mu.Lock() }
 func (d *ServerDeps) WriteUnlock() { d.mu.Unlock() }
+
+// RebuildLayers returns the cached rebuild layers under read lock.
+func (d *ServerDeps) RebuildLayers() (*agent.ToolRegistry, []agent.Tool, []agent.Tool, *mcp.ClientManager) {
+	d.mu.RLock()
+	bl, gw, po, mgr := d.BaselineReg, d.GatewayOverlay, d.PostOverlays, d.MCPManager
+	d.mu.RUnlock()
+	return bl, gw, po, mgr
+}
 
 // RunAgent executes a single agent turn using the shared dependencies.
 // The caller provides an EventHandler to control streaming, approval, and
