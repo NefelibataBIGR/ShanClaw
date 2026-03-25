@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -211,4 +212,308 @@ func (s *Supervisor) ProbeNow(serverName string) ServerHealth {
 		s.mu.Unlock()
 		return h
 	}
+}
+
+// Start discovers servers from the manager and spawns a probe goroutine per server.
+func (s *Supervisor) Start(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return
+	}
+
+	ctx, s.cancel = context.WithCancel(ctx)
+	s.started = true
+	s.mgr.SetSupervised(true)
+
+	// Discover servers from manager configs.
+	s.mgr.mu.Lock()
+	configs := make(map[string]MCPServerConfig, len(s.mgr.configs))
+	for name, cfg := range s.mgr.configs {
+		configs[name] = cfg
+	}
+	connectedServers := make(map[string]bool, len(s.mgr.clients))
+	for name := range s.mgr.clients {
+		connectedServers[name] = true
+	}
+	s.mgr.mu.Unlock()
+
+	now := time.Now()
+	for name, cfg := range configs {
+		var lastTransportOK time.Time
+		if connectedServers[name] {
+			lastTransportOK = now
+		}
+		// All servers start as StateHealthy (provisional). The first probe cycle
+		// establishes the real state. This ensures a definitive onChange fires for
+		// servers that are actually disconnected.
+		entry := &serverEntry{
+			config: cfg,
+			health: ServerHealth{
+				State:           StateHealthy,
+				Since:           now,
+				LastTransportOK: lastTransportOK,
+			},
+			transportBackoff:  newBackoffState(5*time.Second, 30*time.Second, 5*time.Minute),
+			capabilityBackoff: newBackoffState(10*time.Second, 60*time.Second, 5*time.Minute),
+			probeNowCh:        make(chan struct{}, 1),
+		}
+		s.servers[name] = entry
+		s.wg.Add(1)
+		go s.serverLoop(ctx, name, entry)
+	}
+}
+
+// Stop cancels all probe goroutines and waits for them to finish.
+func (s *Supervisor) Stop() {
+	s.mu.Lock()
+	if !s.started {
+		s.mu.Unlock()
+		return
+	}
+	cancel := s.cancel
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	s.wg.Wait()
+
+	s.mu.Lock()
+	s.started = false
+	s.mu.Unlock()
+}
+
+// serverLoop is the per-server polling goroutine.
+func (s *Supervisor) serverLoop(ctx context.Context, name string, entry *serverEntry) {
+	defer s.wg.Done()
+	defer s.drainProbeNow(entry)
+
+	// Run initial probes for servers that started as healthy.
+	s.mu.Lock()
+	probe := s.probes[name]
+	initialState := entry.health.State
+	s.mu.Unlock()
+
+	if initialState == StateHealthy && probe != nil {
+		s.runCapabilityProbe(ctx, name, entry, probe)
+	}
+
+	transportTimer := time.NewTimer(s.jitter(s.transportInterval))
+	defer transportTimer.Stop()
+
+	capTimer := time.NewTimer(s.jitter(s.capabilityInterval))
+	defer capTimer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-entry.probeNowCh:
+			s.runTransportProbe(ctx, name, entry)
+			s.mu.Lock()
+			probe = s.probes[name]
+			transportOK := entry.health.State != StateDisconnected
+			s.mu.Unlock()
+			if transportOK && probe != nil {
+				s.runCapabilityProbe(ctx, name, entry, probe)
+			}
+			s.replyToWaiters(entry)
+			// Reset timers after an on-demand probe.
+			transportTimer.Reset(s.jitter(s.transportInterval))
+			capTimer.Reset(s.jitter(s.capabilityInterval))
+
+		case <-transportTimer.C:
+			s.runTransportProbe(ctx, name, entry)
+			s.mu.Lock()
+			backoff := entry.transportBackoff.interval
+			s.mu.Unlock()
+			next := s.transportInterval
+			if backoff > 0 {
+				next = backoff
+			}
+			transportTimer.Reset(s.jitter(next))
+
+		case <-capTimer.C:
+			s.mu.Lock()
+			probe = s.probes[name]
+			transportOK := entry.health.State != StateDisconnected
+			s.mu.Unlock()
+			if transportOK && probe != nil {
+				s.runCapabilityProbe(ctx, name, entry, probe)
+			}
+			s.mu.Lock()
+			backoff := entry.capabilityBackoff.interval
+			s.mu.Unlock()
+			next := s.capabilityInterval
+			if backoff > 0 {
+				next = backoff
+			}
+			capTimer.Reset(s.jitter(next))
+		}
+	}
+}
+
+// runTransportProbe probes transport health and attempts reconnect on failure.
+func (s *Supervisor) runTransportProbe(ctx context.Context, name string, entry *serverEntry) {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	err := s.mgr.ProbeTransport(probeCtx, name)
+	if err == nil {
+		now := time.Now()
+		s.mu.Lock()
+		entry.transportBackoff.recordSuccess()
+		entry.health.LastTransportOK = now
+		entry.health.LastTransportError = ""
+		entry.health.ConsecutiveFailures = 0
+		old := entry.health.State
+		// Only transition to healthy if we were disconnected (not degraded — that needs capability probe).
+		if old == StateDisconnected {
+			entry.health.State = StateHealthy
+			entry.health.Since = now
+		}
+		newState := entry.health.State
+		s.mu.Unlock()
+		if old != newState {
+			s.fireOnChange(name, old, newState)
+		}
+		return
+	}
+
+	// Transport failed — attempt reconnect before declaring disconnected.
+	reconnCtx, reconnCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer reconnCancel()
+
+	_, reconnErr := s.mgr.Reconnect(reconnCtx, name)
+	if reconnErr == nil {
+		now := time.Now()
+		s.mu.Lock()
+		entry.transportBackoff.recordSuccess()
+		entry.health.LastTransportOK = now
+		entry.health.LastTransportError = ""
+		entry.health.ConsecutiveFailures = 0
+		old := entry.health.State
+		if old == StateDisconnected {
+			entry.health.State = StateHealthy
+			entry.health.Since = now
+		}
+		newState := entry.health.State
+		s.mu.Unlock()
+		if old != newState {
+			s.fireOnChange(name, old, newState)
+		}
+		return
+	}
+
+	// Both probe and reconnect failed.
+	now := time.Now()
+	s.mu.Lock()
+	entry.transportBackoff.recordFailure()
+	entry.health.LastTransportError = err.Error()
+	entry.health.ConsecutiveFailures++
+	old := entry.health.State
+	if old != StateDisconnected {
+		entry.health.State = StateDisconnected
+		entry.health.Since = now
+	}
+	s.mu.Unlock()
+	if old != StateDisconnected {
+		s.fireOnChange(name, old, StateDisconnected)
+	}
+}
+
+// runCapabilityProbe runs the capability probe and updates health state.
+func (s *Supervisor) runCapabilityProbe(ctx context.Context, name string, entry *serverEntry, probe CapabilityProbe) {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	result, err := probe.Probe(probeCtx, s.mgr, name)
+
+	now := time.Now()
+	s.mu.Lock()
+	old := entry.health.State
+
+	var newState HealthState
+	if err != nil {
+		entry.capabilityBackoff.recordFailure()
+		entry.health.LastCapabilityError = err.Error()
+		entry.health.ConsecutiveFailures++
+		newState = StateDisconnected
+	} else if result.Degraded {
+		entry.capabilityBackoff.recordFailure()
+		entry.health.LastCapabilityError = result.Detail
+		newState = StateDegraded
+	} else {
+		entry.capabilityBackoff.recordSuccess()
+		entry.health.LastCapabilityOK = now
+		entry.health.LastCapabilityError = ""
+		entry.health.ConsecutiveFailures = 0
+		newState = StateHealthy
+	}
+
+	if old != newState {
+		entry.health.State = newState
+		entry.health.Since = now
+	}
+	s.mu.Unlock()
+
+	if old != newState {
+		s.fireOnChange(name, old, newState)
+	}
+}
+
+// fireOnChange logs the transition and calls the onChange callback outside the lock.
+func (s *Supervisor) fireOnChange(name string, old, newState HealthState) {
+	log.Printf("[mcp-supervisor] %s: %s -> %s", name, old, newState)
+	s.mu.Lock()
+	fn := s.onChange
+	s.mu.Unlock()
+	if fn != nil {
+		fn(name, old, newState)
+	}
+}
+
+// replyToWaiters sends the current health to all pending ProbeNow callers.
+func (s *Supervisor) replyToWaiters(entry *serverEntry) {
+	s.mu.Lock()
+	h := entry.health
+	s.mu.Unlock()
+
+	entry.waitersMu.Lock()
+	waiters := entry.waiters
+	entry.waiters = nil
+	entry.waitersMu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- h:
+		default:
+		}
+	}
+}
+
+// drainProbeNow replies to all pending waiters on shutdown.
+func (s *Supervisor) drainProbeNow(entry *serverEntry) {
+	s.mu.Lock()
+	h := entry.health
+	s.mu.Unlock()
+
+	entry.waitersMu.Lock()
+	waiters := entry.waiters
+	entry.waiters = nil
+	entry.waitersMu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- h:
+		default:
+		}
+	}
+}
+
+// jitter returns a duration with +/- 20% random variation.
+func (s *Supervisor) jitter(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.8 + 0.4*rand.Float64()))
 }
