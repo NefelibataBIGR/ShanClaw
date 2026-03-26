@@ -174,7 +174,14 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 		home, _ := os.UserHomeDir()
 		localDir := filepath.Join(home, ".shannon", "local")
 		sig := mcp.CommandSignature(pwCfg.Command, pwCfg.Args)
-		if !mcp.ValidatePlaywrightMarker(localDir, sig) {
+		hasToken := false
+		for k, v := range pwCfg.Env {
+			if k == "PLAYWRIGHT_MCP_EXTENSION_TOKEN" && v != "" {
+				hasToken = true
+				break
+			}
+		}
+		if !mcp.ValidatePlaywrightMarkerFull(localDir, sig, hasToken) {
 			delete(mcpServers, "playwright")
 			playwrightNeedsSetup = true
 			log.Printf("Playwright MCP needs setup on this machine — skipping launch")

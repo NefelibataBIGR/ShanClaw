@@ -1902,6 +1902,8 @@ func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
 				mcpStatus[name] = "disabled"
 			} else if mgr != nil && mgr.NeedsSetup(name) {
 				mcpStatus[name] = "needs_setup"
+			} else if name == "playwright" && !playwrightMarkerValid(srv) {
+				mcpStatus[name] = "needs_setup"
 			} else if connected[name] {
 				mcpStatus[name] = "connected"
 			} else {
@@ -1940,6 +1942,25 @@ func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// playwrightMarkerValid checks the local readiness marker for a playwright server config.
+// Used by configStatus to detect auto-cleared markers (after probe failures).
+func playwrightMarkerValid(srv mcp.MCPServerConfig) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	localDir := filepath.Join(home, ".shannon", "local")
+	sig := mcp.CommandSignature(srv.Command, srv.Args)
+	hasToken := false
+	for k, v := range srv.Env {
+		if k == "PLAYWRIGHT_MCP_EXTENSION_TOKEN" && v != "" {
+			hasToken = true
+			break
+		}
+	}
+	return mcp.ValidatePlaywrightMarkerFull(localDir, sig, hasToken)
 }
 
 // mcpConfigChanged returns true if MCP server configuration differs between old and new config.

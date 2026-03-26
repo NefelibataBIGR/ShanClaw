@@ -496,6 +496,8 @@ func (s *Supervisor) runCapabilityProbe(ctx context.Context, name string, entry 
 	} else if result.Degraded {
 		entry.capabilityBackoff.recordFailure()
 		entry.health.LastCapabilityError = result.Detail
+		entry.health.ConsecutiveFailures++
+		capFailures = entry.health.ConsecutiveFailures
 		newState = StateDegraded
 	} else {
 		entry.capabilityBackoff.recordSuccess()
