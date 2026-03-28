@@ -1130,21 +1130,20 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Skills != nil {
-		// Replace semantics: clear existing agent skills, then write only what's in the payload.
-		agentSkillsDir := filepath.Join(s.deps.AgentsDir, name, "skills")
-		if err := os.RemoveAll(agentSkillsDir); err != nil && !os.IsNotExist(err) {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("clear agent skills: %v", err))
+		// Write attached skills manifest — agent loader resolves content from global/bundled.
+		skillNames := make([]string, 0, len(req.Skills))
+		for _, skill := range req.Skills {
+			if skill != nil {
+				skillNames = append(skillNames, skill.Name)
+			}
+		}
+		if err := agents.WriteAttachedSkills(s.deps.AgentsDir, name, skillNames); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("write skill manifest: %v", err))
 			return
 		}
-		for _, skill := range req.Skills {
-			if skill == nil {
-				continue
-			}
-			if err := agents.WriteAgentSkill(s.deps.AgentsDir, name, skill); err != nil {
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("write skill %s: %v", skill.Name, err))
-				return
-			}
-		}
+		// Clean up any legacy agent-scoped SKILL.md files
+		agentSkillsDir := filepath.Join(s.deps.AgentsDir, name, "skills")
+		_ = os.RemoveAll(agentSkillsDir)
 	}
 	a, err := agents.LoadAgent(s.deps.AgentsDir, name)
 	if err != nil {

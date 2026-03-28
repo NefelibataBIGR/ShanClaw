@@ -136,24 +136,90 @@ func LoadAgent(agentsDir, name string) (*Agent, error) {
 	// Load agent-scoped commands (optional)
 	ag.Commands = loadAgentCommands(filepath.Join(dir, "commands"))
 
-	// Load agent-scoped skills + global skills (agent takes priority via seen map)
-	agentSkillsDir := filepath.Join(dir, "skills")
-	globalSkillsDir := filepath.Join(filepath.Dir(agentsDir), "skills")
-	bundledSrc, err := skills.BundledSkillSource(filepath.Dir(agentsDir))
-	if err != nil {
-		return nil, fmt.Errorf("agent %q: failed to load bundled skills: %w", name, err)
+	// Load skills using one of two modes:
+	// 1. Attached manifest (_attached.yaml): agent uses only the listed skills,
+	//    resolved from global/bundled sources. Enables the toggle model.
+	// 2. No manifest: inherit all global + bundled skills (backwards-compatible).
+	shannonDir := filepath.Dir(agentsDir)
+	attachedNames, hasManifest := loadAttachedSkills(filepath.Join(dir, "_attached.yaml"))
+	if hasManifest {
+		globalSkillsDir := filepath.Join(shannonDir, "skills")
+		bundledSrc, err := skills.BundledSkillSource(shannonDir)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: failed to load bundled skills: %w", name, err)
+		}
+		// Load all available skills, then filter to only attached names
+		allSkills, err := skills.LoadSkills(
+			skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
+			bundledSrc,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
+		}
+		attached := make(map[string]bool, len(attachedNames))
+		for _, n := range attachedNames {
+			attached[n] = true
+		}
+		var filtered []*skills.Skill
+		for _, s := range allSkills {
+			if attached[s.Name] {
+				filtered = append(filtered, s)
+			}
+		}
+		ag.Skills = filtered
+	} else {
+		globalSkillsDir := filepath.Join(shannonDir, "skills")
+		bundledSrc, err := skills.BundledSkillSource(shannonDir)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: failed to load bundled skills: %w", name, err)
+		}
+		loadedSkills, err := skills.LoadSkills(
+			skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
+			bundledSrc,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
+		}
+		ag.Skills = loadedSkills
 	}
-	loadedSkills, err := skills.LoadSkills(
-		skills.SkillSource{Dir: agentSkillsDir, Source: "agent:" + name},
-		skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
-		bundledSrc,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
-	}
-	ag.Skills = loadedSkills
 
 	return ag, nil
+}
+
+// loadAttachedSkills reads the _attached.yaml manifest listing skill names.
+// Returns (names, true) if the file exists, (nil, false) if not.
+func loadAttachedSkills(path string) ([]string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var names []string
+	if err := yaml.Unmarshal(data, &names); err != nil {
+		return nil, false
+	}
+	return names, true
+}
+
+// WriteAttachedSkills writes the _attached.yaml manifest for an agent.
+func WriteAttachedSkills(agentsDir, agentName string, names []string) error {
+	dir := filepath.Join(agentsDir, agentName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(names)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "_attached.yaml"), data, 0600)
+}
+
+// DeleteAttachedSkills removes the _attached.yaml manifest.
+func DeleteAttachedSkills(agentsDir, agentName string) error {
+	path := filepath.Join(agentsDir, agentName, "_attached.yaml")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // parseAgentConfig parses the per-agent config.yaml, handling the special
