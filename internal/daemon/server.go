@@ -766,18 +766,13 @@ func (s *Server) skillSources() ([]skills.SkillSource, error) {
 	if s.deps == nil {
 		return nil, fmt.Errorf("daemon deps not configured")
 	}
+	// Only return global (installed) skills — bundled skills are hidden from
+	// the skills list API. Users install them on demand via POST /skills/install.
 	global := skills.SkillSource{
 		Dir:    filepath.Join(s.deps.ShannonDir, "skills"),
 		Source: skills.SourceGlobal,
 	}
-	bundled, err := skills.BundledSkillSource(s.deps.ShannonDir)
-	if err != nil {
-		return nil, err
-	}
-	return []skills.SkillSource{
-		global,
-		bundled,
-	}, nil
+	return []skills.SkillSource{global}, nil
 }
 
 func (s *Server) resolveSkillDir(name string) (string, string, bool, error) {
