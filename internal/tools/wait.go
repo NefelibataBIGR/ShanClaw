@@ -45,7 +45,7 @@ func (t *WaitTool) Info() agent.ToolInfo {
 	}
 }
 
-func (t *WaitTool) RequiresApproval() bool { return true }
+func (t *WaitTool) RequiresApproval() bool { return false }
 
 func (t *WaitTool) Run(ctx context.Context, argsJSON string) (agent.ToolResult, error) {
 	if runtime.GOOS != "darwin" || t.client == nil {

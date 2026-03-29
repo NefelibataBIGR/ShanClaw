@@ -97,7 +97,7 @@ func (t *AccessibilityTool) Info() agent.ToolInfo {
 	}
 }
 
-func (t *AccessibilityTool) RequiresApproval() bool { return true }
+func (t *AccessibilityTool) RequiresApproval() bool { return false }
 
 func (t *AccessibilityTool) Run(ctx context.Context, argsJSON string) (agent.ToolResult, error) {
 	if runtime.GOOS != "darwin" || t.client == nil {

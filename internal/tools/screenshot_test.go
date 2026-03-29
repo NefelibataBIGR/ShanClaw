@@ -33,8 +33,8 @@ func TestScreenshot_Info(t *testing.T) {
 
 func TestScreenshot_RequiresApproval(t *testing.T) {
 	tool := &ScreenshotTool{}
-	if !tool.RequiresApproval() {
-		t.Error("expected RequiresApproval to return true")
+	if tool.RequiresApproval() {
+		t.Error("expected RequiresApproval to return false")
 	}
 }
 

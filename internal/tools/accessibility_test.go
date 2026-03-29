@@ -28,8 +28,8 @@ func TestAccessibility_Info(t *testing.T) {
 
 func TestAccessibility_RequiresApproval(t *testing.T) {
 	tool := &AccessibilityTool{client: &AXClient{}}
-	if !tool.RequiresApproval() {
-		t.Error("expected RequiresApproval to return true")
+	if tool.RequiresApproval() {
+		t.Error("expected RequiresApproval to return false")
 	}
 }
 

@@ -134,4 +134,4 @@ func (t *MCPTool) Run(ctx context.Context, argsJSON string) (agent.ToolResult, e
 	return agent.ToolResult{Content: content, IsError: isError}, nil
 }
 
-func (t *MCPTool) RequiresApproval() bool { return true }
+func (t *MCPTool) RequiresApproval() bool { return false }
