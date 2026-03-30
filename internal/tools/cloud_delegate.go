@@ -35,6 +35,7 @@ type cloudDelegateArgs struct {
 	Task         string `json:"task"`
 	Context      string `json:"context,omitempty"`
 	WorkflowType string `json:"workflow_type,omitempty"`
+	Terminal     *bool  `json:"terminal,omitempty"`
 }
 
 func NewCloudDelegateTool(gw *client.GatewayClient, apiKey string, timeout time.Duration, handler agent.EventHandler, agentName, agentPrompt string) *CloudDelegateTool {
@@ -83,6 +84,10 @@ func (t *CloudDelegateTool) Info() agent.ToolInfo {
 					"type":        "string",
 					"enum":        []string{"research", "swarm", "auto"},
 					"description": "Workflow type: 'research' for deep multi-source research with web search and synthesis. 'swarm' for complex tasks requiring a lead agent coordinating dynamic sub-agents (researcher, coder, analyst) with a shared workspace — best for open-ended analysis, multi-step problem solving, or tasks combining research + computation + writing. 'auto' (default) routes to a fixed DAG plan — good for structured tasks with clear subtask dependencies.",
+				},
+				"terminal": map[string]any{
+					"type":        "boolean",
+					"description": "If true, return the cloud result directly to the user (bypasses further processing). If false, feed the result back into your context so you can continue working with it (e.g., write files, run tests, apply changes). Defaults to true for 'research' workflow, false otherwise.",
 				},
 			},
 		},
@@ -353,7 +358,14 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 		}
 	}
 
-	return agent.ToolResult{Content: finalResult, CloudResult: fullResultConfirmed}, nil
+	// Determine terminal mode: explicit arg takes precedence,
+	// otherwise research defaults to terminal, swarm/auto default to non-terminal.
+	terminal := args.WorkflowType == "research"
+	if args.Terminal != nil {
+		terminal = *args.Terminal
+	}
+
+	return agent.ToolResult{Content: finalResult, CloudResult: fullResultConfirmed && terminal}, nil
 }
 
 func (t *CloudDelegateTool) RequiresApproval() bool { return true }
@@ -404,4 +416,3 @@ func statusMsg(agentID, message, fallback string) string {
 var _ agent.SafeChecker = (*CloudDelegateTool)(nil)
 
 func (t *CloudDelegateTool) IsSafeArgs(_ string) bool { return false }
-

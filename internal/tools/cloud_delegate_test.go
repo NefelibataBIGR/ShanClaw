@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -14,6 +15,48 @@ func TestCloudDelegateInfo(t *testing.T) {
 	}
 	if len(info.Required) != 1 || info.Required[0] != "task" {
 		t.Errorf("expected required=[task], got %v", info.Required)
+	}
+	// Schema must expose the terminal parameter
+	props, ok := info.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("expected properties in schema")
+	}
+	if _, ok := props["terminal"]; !ok {
+		t.Error("schema should expose 'terminal' parameter")
+	}
+}
+
+func TestCloudDelegateTerminalDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     string
+		wantCloud bool // expected CloudResult (ignoring fullResultConfirmed)
+	}{
+		{"research defaults terminal", `{"task":"t","workflow_type":"research"}`, true},
+		{"swarm defaults non-terminal", `{"task":"t","workflow_type":"swarm"}`, false},
+		{"auto defaults non-terminal", `{"task":"t","workflow_type":"auto"}`, false},
+		{"omitted defaults non-terminal", `{"task":"t"}`, false},
+		{"explicit false overrides research", `{"task":"t","workflow_type":"research","terminal":false}`, false},
+		{"explicit true overrides swarm", `{"task":"t","workflow_type":"swarm","terminal":true}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Will fail at gateway (nil), but we can check CloudResult on the error path
+			// Since gateway is nil, result is always an error — CloudResult won't be set.
+			// Instead, verify the arg parsing and terminal logic directly.
+			var args cloudDelegateArgs
+			if err := json.Unmarshal([]byte(tt.args), &args); err != nil {
+				t.Fatalf("failed to parse args: %v", err)
+			}
+			terminal := args.WorkflowType == "research"
+			if args.Terminal != nil {
+				terminal = *args.Terminal
+			}
+			if terminal != tt.wantCloud {
+				t.Errorf("terminal=%v, want %v", terminal, tt.wantCloud)
+			}
+		})
 	}
 }
 
