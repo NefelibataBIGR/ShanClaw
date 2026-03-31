@@ -13,7 +13,6 @@ import (
 const (
 	maxMemoryChars       = 2000
 	maxInstructionsChars = 16000
-	maxContextChars      = 800
 )
 
 // PromptOptions configures the system prompt assembly.

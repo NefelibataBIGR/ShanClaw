@@ -212,39 +212,7 @@ func (r *ToolRegistry) FilterByDeny(deny []string) *ToolRegistry {
 func (r *ToolRegistry) Schemas() []client.Tool {
 	schemas := make([]client.Tool, 0, len(r.order))
 	for _, name := range r.order {
-		t := r.tools[name]
-
-		// Check for native tool definition
-		if native, ok := t.(NativeToolProvider); ok {
-			def := native.NativeToolDef()
-			if def != nil {
-				schemas = append(schemas, client.Tool{
-					Type:            def.Type,
-					Name:            def.Name,
-					DisplayWidthPx:  def.DisplayWidthPx,
-					DisplayHeightPx: def.DisplayHeightPx,
-				})
-				continue
-			}
-		}
-
-		// Standard function tool
-		info := t.Info()
-		params := info.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
-		if info.Required != nil {
-			params["required"] = info.Required
-		}
-		schemas = append(schemas, client.Tool{
-			Type: "function",
-			Function: client.FunctionDef{
-				Name:        info.Name,
-				Description: info.Description,
-				Parameters:  params,
-			},
-		})
+		schemas = append(schemas, buildToolSchema(r.tools[name]))
 	}
 	return schemas
 }
@@ -260,38 +228,41 @@ func (r *ToolRegistry) SortedSchemas() []client.Tool {
 	schemas := make([]client.Tool, 0, len(r.order))
 	for _, group := range [][]string{local, mcp, gw} {
 		for _, name := range group {
-			t := r.tools[name]
-			if native, ok := t.(NativeToolProvider); ok {
-				def := native.NativeToolDef()
-				if def != nil {
-					schemas = append(schemas, client.Tool{
-						Type:            def.Type,
-						Name:            def.Name,
-						DisplayWidthPx:  def.DisplayWidthPx,
-						DisplayHeightPx: def.DisplayHeightPx,
-					})
-					continue
-				}
-			}
-			info := t.Info()
-			params := info.Parameters
-			if params == nil {
-				params = map[string]any{"type": "object", "properties": map[string]any{}}
-			}
-			if info.Required != nil {
-				params["required"] = info.Required
-			}
-			schemas = append(schemas, client.Tool{
-				Type: "function",
-				Function: client.FunctionDef{
-					Name:        info.Name,
-					Description: info.Description,
-					Parameters:  params,
-				},
-			})
+			schemas = append(schemas, buildToolSchema(r.tools[name]))
 		}
 	}
 	return schemas
+}
+
+// buildToolSchema converts a Tool into a client.Tool schema definition.
+func buildToolSchema(t Tool) client.Tool {
+	if native, ok := t.(NativeToolProvider); ok {
+		def := native.NativeToolDef()
+		if def != nil {
+			return client.Tool{
+				Type:            def.Type,
+				Name:            def.Name,
+				DisplayWidthPx:  def.DisplayWidthPx,
+				DisplayHeightPx: def.DisplayHeightPx,
+			}
+		}
+	}
+	info := t.Info()
+	params := info.Parameters
+	if params == nil {
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	if info.Required != nil {
+		params["required"] = info.Required
+	}
+	return client.Tool{
+		Type: "function",
+		Function: client.FunctionDef{
+			Name:        info.Name,
+			Description: info.Description,
+			Parameters:  params,
+		},
+	}
 }
 
 // SortedNames returns tool names in the same deterministic order as SortedSchemas.
