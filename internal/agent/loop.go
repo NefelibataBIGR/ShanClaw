@@ -420,17 +420,33 @@ type approvedToolCall struct {
 	tool  Tool                // resolved tool
 }
 
+// assembleUserMessage combines volatile context and user query with cache_break markers.
+// The gateway's Anthropic provider splits on <!-- cache_break -->, caching the prefix.
+// Layout: [stableContext]\n<!-- cache_break -->\n[volatileContext]\n\n[userMessage]
+func assembleUserMessage(parts prompt.PromptParts, userMessage string) string {
+	var sb strings.Builder
+
+	if parts.StableContext != "" {
+		sb.WriteString(parts.StableContext)
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("<!-- cache_break -->\n")
+	sb.WriteString(parts.VolatileContext)
+	sb.WriteString("\n\n")
+	sb.WriteString(userMessage)
+
+	return sb.String()
+}
+
 func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []client.Message) (string, *TurnUsage, error) {
 	a.injectedMessages = nil   // reset for this run
 	a.runMessages = nil        // reset for this run
 	a.runMsgInjected = nil     // reset for this run
 	a.runMsgTimestamps = nil   // reset for this run
 
-	// Build system prompt using prompt builder with instructions/memory
-	var toolNames []string
-	for _, t := range a.tools.All() {
-		toolNames = append(toolNames, t.Info().Name)
-	}
+	// Build tool names from sorted ordering for deterministic system prompt
+	toolNames := a.tools.SortedNames()
 
 	cwd, _ := os.Getwd()
 	instrText, _ := instructions.LoadInstructions(a.shannonDir, ".", 4000)
@@ -459,7 +475,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		mem, _ = instructions.LoadMemory(a.shannonDir, 200)
 	}
 
-	systemPrompt := prompt.BuildSystemPrompt(prompt.PromptOptions{
+	parts := prompt.BuildSystemPrompt(prompt.PromptOptions{
 		BasePrompt:    basePrompt,
 		Memory:        mem,
 		Instructions:  instrText,
@@ -471,7 +487,8 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		StickyContext: a.stickyContext,
 	})
 
-	// Append cloud delegation guidance if tool is registered
+	// Append cloud delegation guidance to the static system prompt
+	systemPrompt := parts.System
 	if _, hasCloud := a.tools.Get("cloud_delegate"); hasCloud {
 		systemPrompt += cloudDelegationGuidance
 	}
@@ -481,7 +498,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	if history != nil {
 		messages = append(messages, ctxwin.SanitizeHistory(history)...)
 	}
-	messages = append(messages, client.Message{Role: "user", Content: client.NewTextContent(userMessage)})
+	messages = append(messages, client.Message{Role: "user", Content: client.NewTextContent(assembleUserMessage(parts, userMessage))})
 
 	// Track where new messages start so RunMessages() can return only this run's
 	// conversation (user prompt + tool calls + results + assistant replies),
@@ -525,7 +542,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	// of the messages slice. Call immediately after appending any message.
 	stampMessage := func() { msgTimestamps[len(messages)-1] = time.Now() }
 
-	toolSchemas := a.tools.Schemas()
+	toolSchemas := a.tools.SortedSchemas()
 	usage := &TurnUsage{}
 
 	// Read tracker: enforces read-before-edit for file_edit/file_write
